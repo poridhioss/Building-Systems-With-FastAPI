@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    container_name: auth_lab1_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: auth_lab1_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata_auth_lab1:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d auth_lab1_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  pgdata_auth_lab1:
