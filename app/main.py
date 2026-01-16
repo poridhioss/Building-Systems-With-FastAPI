@@ -1,3 +1,4 @@
+# ========== IMPORTS FROM LAB 1 ==========
 import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException, status
@@ -9,18 +10,23 @@ from .models import User
 from .schemas import UserCreate, UserOut
 from .utils import get_password_hash
 
-# Load environment variables
+# ========== NEW IMPORTS IN LAB 2 ==========
+from datetime import timedelta
+from .schemas import UserLogin, Token
+from .utils import verify_password
+from .auth import create_access_token, get_current_user
+from .config import settings
+
+# ========== FROM LAB 1 ==========
 load_dotenv()
 
-# Create FastAPI application
 app = FastAPI(
-    title=os.getenv("APP_NAME", "FastAPI Auth Lab 1"),
-    description="User registration with secure password hashing",
-    version="1.0.0"
+    title=settings.APP_NAME,  # UPDATED in Lab 2 to use settings
+    description="User authentication with JWT",  # UPDATED in Lab 2
+    version="2.0.0"  # UPDATED in Lab 2
 )
 
 
-# Dependency: Database session
 def get_db():
     db = SessionLocal()
     try:
@@ -29,16 +35,13 @@ def get_db():
         db.close()
 
 
-# Health check endpoint
 @app.get("/ping")
 def ping():
     return {"status": "ok", "message": "pong"}
 
 
-# User registration endpoint
 @app.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def register_user(payload: UserCreate, db: Session = Depends(get_db)):
-    # Check if email already exists
     existing_user = db.query(User).filter(User.email == payload.email).first()
 
     if existing_user:
@@ -47,10 +50,8 @@ def register_user(payload: UserCreate, db: Session = Depends(get_db)):
             detail="Email already registered"
         )
 
-    # Hash the password (NEVER store plain text!)
     hashed_password = get_password_hash(payload.password)
 
-    # Create new user instance
     new_user = User(
         email=payload.email,
         hashed_password=hashed_password,
@@ -58,17 +59,58 @@ def register_user(payload: UserCreate, db: Session = Depends(get_db)):
     )
 
     try:
-        # Add to session and commit to database
         db.add(new_user)
         db.commit()
-        db.refresh(new_user)  # Reload from DB to get the ID
-
+        db.refresh(new_user)
         return new_user
 
     except IntegrityError:
-        # Rollback in case of database constraint violation
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Email already registered"
         )
+
+
+# ========== NEW IN LAB 2 ==========
+@app.post("/login", response_model=Token)
+def login(payload: UserLogin, db: Session = Depends(get_db)):
+    # Find user by email
+    user = db.query(User).filter(User.email == payload.email).first()
+
+    # Check if user exists
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Verify password
+    if not verify_password(payload.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Check if user is active
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is disabled"
+        )
+
+    # Create access token
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email},
+        expires_delta=access_token_expires
+    )
+
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.get("/users/me", response_model=UserOut)
+def get_current_user_info(current_user: User = Depends(get_current_user)):
+    return current_user

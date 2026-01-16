@@ -1,3 +1,4 @@
+# ========== FROM LAB 1 ==========
 fastapi==0.115.5
 uvicorn[standard]==0.32.0
 python-dotenv==1.0.1
@@ -8,3 +9,6 @@ alembic==1.13.2
 pydantic[email]
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
+
+# ========== NEW IN LAB 2 ==========
+python-jose[cryptography]==3.3.0
