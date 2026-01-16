@@ -185,6 +185,7 @@ pydantic==2.9.2
 alembic==1.13.2
 pydantic[email]
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
 ```
 
 FastAPI is our web framework for building APIs. Uvicorn is the ASGI server that actually runs FastAPI applications. Python-dotenv loads environment variables from our .env file so we don't hardcode sensitive information. SQLAlchemy is the ORM that lets us work with databases using Python objects instead of raw SQL. Psycopg2-binary is the PostgreSQL adapter that SQLAlchemy uses under the hood. Pydantic provides data validation using Python type hints. Alembic is our database migration tool that tracks schema changes. The pydantic[email] extra adds email validation support, and passlib[bcrypt] is our password hashing library with bcrypt support.
@@ -463,16 +464,11 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 def get_password_hash(password: str) -> str:
     # Hash a plain text password using bcrypt
     return pwd_context.hash(password)
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    # Verify a plain text password against a hashed password
-    return pwd_context.verify(plain_password, hashed_password)
 ```
 
-The `pwd_context` configures passlib to use bcrypt with automatic deprecation handling in case we want to upgrade to a stronger algorithm later. The `get_password_hash()` function takes a plain text password and returns a bcrypt hash starting with "$2b$12$..." - you'll use this during registration. The `verify_password()` function takes a plain text password and a hash, returning True if they match - you'll use this during login in Lab 2.
+The `pwd_context` configures passlib to use bcrypt with automatic deprecation handling in case we want to upgrade to a stronger algorithm later. The `get_password_hash()` function takes a plain text password and returns a bcrypt hash starting with "$2b$12$..." - you'll use this during registration. 
 
-When you call `get_password_hash("myPassword")`, bcrypt generates a random salt, combines the password with the salt, applies 4096 rounds of the bcrypt algorithm (because work factor is 12), and returns the result as "$2b$12$<salt><hash>". When you later call `verify_password("myPassword", stored_hash)`, bcrypt extracts the salt from the stored hash, hashes the input password with that same salt, compares the new hash with the stored hash, and returns True if they match. This is how you can verify passwords without ever storing them in plain text.
+When you call `get_password_hash("myPassword")`, bcrypt generates a random salt, combines the password with the salt, applies 4096 rounds of the bcrypt algorithm (because work factor is 12), and returns the result as "$2b$12$<salt><hash>".
 
 ### Step 14: Create `app/main.py`
 
@@ -719,38 +715,7 @@ Look at those hashed_password values. Each one starts with "$2b$12$", which tell
 
 ## Next Steps: Preparing for Lab 2
 
-Lab-2 is a continuation of lab-1. So, you are requested to sign in to github inside poridhi VM, and push the codes to a repository so that you can use it in the later labs.
-```bash
-git clone https://github.com/poridhiEng/fastapi-auth-labs.git
-cd fastapi-auth-labs/lab-1
-
-# Install dependencies
-python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-pip install -r requirements.txt
-
-# Start database
-docker compose up -d
-
-# Run migrations
-alembic upgrade head
-
-# Start server
-uvicorn app.main:app --reload
-```
-
-If you want to continue with your own implementation, commit your Lab 1 work:
-
-```bash
-# Commit your Lab 1 work
-git init
-git add .
-git commit -m "Complete Lab 1: User registration with password hashing"
-
-# Push to your GitHub (optional)
-git remote add origin <your-repo-url>
-git push -u origin main
-```
+Lab-2 is a continuation of lab-1. So, you are requested to sign in to github inside poridhi VM, and push the codes to a repository so that you can use it in the later labs. Otherwise, you can also use the content pushed by the poridhi team, which you shall later find in lab-2.
 
 ## Conclusion
 
