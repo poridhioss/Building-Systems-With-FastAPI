@@ -160,20 +160,26 @@ The word "Bearer" indicates that whoever bears (possesses) this token should be 
 
 ## Prerequisites
 
-This lab builds directly on Lab 1. You'll need:
+**IMPORTANT:** Lab 2 will be done on a fresh Poridhi VM (different from Lab 1). This means your database will be empty and you'll start with a clean environment.
 
-- Completed Lab 1 with working user registration
-- PostgreSQL database with users table
-- FastAPI application running with `/register` endpoint
-- Virtual environment with all dependencies installed
+This lab builds on the code from Lab 1. You have two options:
 
-If you haven't completed Lab 1, you can clone the starting code from:
+**Option 1: Clone the Lab 1 code from GitHub (Recommended for fresh start)**
 
 ```bash
 git clone https://github.com/poridhioss/Building-Systems-With-FastAPI.git
 cd Building-Systems-With-FastAPI/
-git checkout -b mod-50/lab-1 origin/mod-50/lab-
+git checkout -b mod-50/lab-1 origin/mod-50/lab-1
 ```
+
+**Option 2: Use your own Lab 1 implementation**
+
+If you completed Lab 1 and pushed your code to GitHub, you can clone your own repository.
+
+Either way, you'll need:
+- Lab 1 code with working user registration (`/register` endpoint)
+- PostgreSQL database setup (we'll start it fresh in this lab)
+- Virtual environment ready to install dependencies
 
 Check `python --version` in the bash terminal of poridhi vm. If it does not work, then do the following:
 ```bash
@@ -214,9 +220,10 @@ Root directory
 
 ### Step 1: Update Requirements
 
-First, we need to add JWT support. Open `requirements.txt` and add:
+First, we need to add JWT support. Update your `requirements.txt` file to include `python-jose[cryptography]`. Here's the COMPLETE `requirements.txt` file:
 
 ```txt
+# ========== FROM LAB 1 ==========
 fastapi==0.115.5
 uvicorn[standard]==0.32.0
 python-dotenv==1.0.1
@@ -227,7 +234,9 @@ alembic==1.13.2
 pydantic[email]
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
-python-jose[cryptography]==3.3.0  # NEW: JWT support
+
+# ========== NEW IN LAB 2 ==========
+python-jose[cryptography]==3.3.0
 ```
 
 The `python-jose` library provides JWT encoding and decoding with cryptographic signing. The `[cryptography]` extra includes the cryptography backend for better performance and security.
@@ -250,11 +259,14 @@ pip install -r requirements.txt
 
 ### Step 2: Update Environment Variables
 
-Add JWT configuration to your `.env` file:
+Update your `.env` file to add JWT configuration. Here's the COMPLETE `.env` file:
 
 ```env
+# ========== FROM LAB 1 ==========
 APP_NAME=FastAPI Auth Lab 2
 DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/auth_lab1_db
+
+# ========== NEW IN LAB 2 ==========
 JWT_SECRET=your-super-secret-key-change-this-in-production-min-32-chars
 JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
@@ -266,11 +278,14 @@ The JWT_SECRET should be a long, random string. In production, generate it using
 openssl rand -hex 32
 ```
 
-Also update `.env.example`:
+Also update your `.env.example` file. Here's the COMPLETE `.env.example` file:
 
 ```env
+# ========== FROM LAB 1 ==========
 APP_NAME=FastAPI Auth Lab 2
 DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/auth_lab1_db
+
+# ========== NEW IN LAB 2 ==========
 JWT_SECRET=your-super-secret-key-change-this-in-production
 JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
@@ -302,33 +317,39 @@ This pattern makes it easy to access configuration throughout your application. 
 
 ### Step 4: Update Utility Functions
 
-<!-- We already have `get_password_hash()` from Lab 1. Now add the verification function to `app/utils.py`:
+We already have `get_password_hash()` from Lab 1. Now we need to add the `verify_password()` function to verify passwords during login. Update your `app/utils.py` file. Here's the COMPLETE `app/utils.py` file:
 
 ```python
 from passlib.context import CryptContext
 
+# ========== FROM LAB 1 ==========
+# Create password context with bcrypt
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def get_password_hash(password: str) -> str:
+    # Hash a plain text password using bcrypt
     return pwd_context.hash(password)
 
 
+# ========== NEW IN LAB 2 ==========
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    # Verify a plain text password against a hashed password
     return pwd_context.verify(plain_password, hashed_password)
 ```
 
-The `verify_password()` function takes the password the user entered during login and the hashed password from your database. It hashes the plain password using the same salt that's embedded in the stored hash, then compares the results. If they match, the password is correct. -->
+The `verify_password()` function takes the password the user entered during login and the hashed password from your database. It hashes the plain password using the same salt that's embedded in the stored hash, then compares the results. If they match, the password is correct.
 
 ### Step 5: Update Pydantic Schemas
 
-Add new schemas to `app/schemas.py`:
+We need to add new schemas for login, tokens, and token data. Update your `app/schemas.py` file. Here's the COMPLETE `app/schemas.py` file:
 
 ```python
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Optional  # NEW in Lab 2
 
 
+# ========== FROM LAB 1 ==========
 class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=100)
@@ -343,6 +364,7 @@ class UserOut(BaseModel):
         from_attributes = True
 
 
+# ========== NEW IN LAB 2 ==========
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
@@ -374,7 +396,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -383,7 +405,8 @@ from .models import User
 from .schemas import TokenData
 
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+# HTTPBearer provides a simple token input field in Swagger UI
+security = HTTPBearer()
 
 
 def get_db():
@@ -423,12 +446,15 @@ def verify_token(token: str, credentials_exception):
         raise credentials_exception
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    # Extract token from credentials
+    token = credentials.credentials
 
     token_data = verify_token(token, credentials_exception)
 
@@ -442,42 +468,47 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 This is the heart of your authentication system. Let's walk through each function:
 
-**oauth2_scheme** - This is a FastAPI utility that extracts the token from the Authorization header. When you use `token: str = Depends(oauth2_scheme)` in a route, FastAPI automatically looks for a header like `Authorization: Bearer <token>`, extracts the token part, and passes it to your function. If the header is missing or malformed, it returns a 401 error automatically.
+**security (HTTPBearer)** - This is a FastAPI security scheme that extracts the token from the Authorization header. Unlike OAuth2PasswordBearer which shows a username/password form in Swagger UI, HTTPBearer provides a simple text field where you can directly paste your access token. When you use `credentials: HTTPAuthorizationCredentials = Depends(security)` in a route, FastAPI automatically looks for a header like `Authorization: Bearer <token>`, extracts the token, and passes it to your function. If the header is missing or malformed, it returns a 401 error automatically.
 
 **create_access_token()** - This creates a JWT. It takes a dictionary (typically containing the user's email as the "sub" claim) and an optional expiration time. If you don't provide expiration, it uses the default from your config (30 minutes). It adds the expiration as the "exp" claim, then uses `jwt.encode()` to create the token. The encoding process creates the header, base64-encodes it, base64-encodes the payload, concatenates them with a dot, and signs the whole thing with your secret key.
 
 **verify_token()** - This decodes and validates a JWT. It uses `jwt.decode()` which verifies the signature and checks expiration automatically. If the signature is wrong or the token is expired, it raises a JWTError which we catch and convert to an HTTP exception. If the token is valid, we extract the email from the "sub" claim and return it wrapped in a TokenData schema.
 
-**get_current_user()** - This is the authentication dependency you'll use on protected routes. It takes the token (extracted by oauth2_scheme), verifies it, extracts the email, and looks up the user in the database. If any step fails - token is invalid, user doesn't exist, etc. - it raises a 401 Unauthorized error. If everything succeeds, it returns the User object, which you can then use in your route handler.
+**get_current_user()** - This is the authentication dependency you'll use on protected routes. It receives the credentials object (extracted by the HTTPBearer security scheme), gets the token from it, verifies it, extracts the email, and looks up the user in the database. If any step fails - token is invalid, user doesn't exist, etc. - it raises a 401 Unauthorized error. If everything succeeds, it returns the User object, which you can then use in your route handler.
 
 The beauty of this design is that you can protect any route just by adding `current_user: User = Depends(get_current_user)` to its parameters. FastAPI handles all the dependency injection automatically.
 
 ### Step 7: Update Main Application
 
-Now let's add the login endpoint and a protected route to `app/main.py`:
+Now let's add the login endpoint and a protected route. Update your `app/main.py` file. Here's the COMPLETE `app/main.py` file (includes the `/register` endpoint from Lab 1 plus new `/login` and `/users/me` endpoints):
 
 ```python
+# ========== IMPORTS FROM LAB 1 ==========
 import os
-from datetime import timedelta
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from .database import SessionLocal
 from .models import User
-from .schemas import UserCreate, UserOut, UserLogin, Token
-from .utils import get_password_hash, verify_password
+from .schemas import UserCreate, UserOut
+from .utils import get_password_hash
+
+# ========== NEW IMPORTS IN LAB 2 ==========
+from datetime import timedelta
+from .schemas import UserLogin, Token
+from .utils import verify_password
 from .auth import create_access_token, get_current_user
 from .config import settings
 
+# ========== FROM LAB 1 ==========
 load_dotenv()
 
 app = FastAPI(
-    title=settings.APP_NAME,
-    description="User authentication with JWT",
-    version="2.0.0"
+    title=settings.APP_NAME,  # UPDATED in Lab 2 to use settings
+    description="User authentication with JWT",  # UPDATED in Lab 2
+    version="2.0.0"  # UPDATED in Lab 2
 )
 
 
@@ -526,6 +557,7 @@ def register_user(payload: UserCreate, db: Session = Depends(get_db)):
         )
 
 
+# ========== NEW IN LAB 2 ==========
 @app.post("/login", response_model=Token)
 def login(payload: UserLogin, db: Session = Depends(get_db)):
     # Find user by email
@@ -579,23 +611,95 @@ Notice we don't return the user's information here, just the token. The client s
 
 The beauty is that if the token is invalid or missing, the user never reaches this function - FastAPI returns a 401 error automatically. Your route handler only runs if authentication succeeds.
 
+### Step 8: Start PostgreSQL Database
 
+Before running the application, make sure your PostgreSQL database from Lab 1 is running.
 
-### Step 8: Test the Login Flow
+```bash
+docker compose up -d
+```
 
+Then run migrations (make sure you are in venv mode. If not do you using `source .venv/bin/activate`):
 
-![alt text](image-1.png)
-![alt text](image.png)
+```bash
+alembic upgrade head
+```
 
-Start your application:
+**Check if database has any users:**
+
+```bash
+docker compose exec db psql -U postgres -d auth_lab1_db -c "SELECT id, email, is_active FROM users;"
+```
+
+Since Lab 2 is on a fresh VM (different from Lab 1), your database will be empty. This is expected! You'll register new users during testing using the `/register` endpoint before testing the `/login` functionality.
+
+### Step 9: Run Your FastAPI Application
+
+Now start your FastAPI application:
 
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Set up your Poridhi Load Balancer as you did in Lab 1, then open Swagger UI at `<Load Balancer URL>/docs`.
+**Expected output:**
 
-**Test 1: Login with valid credentials**
+![alt text](image-2.png)
+
+### Step 10: Access FastAPI Application using Poridhi's Load Balancer
+
+To access the FastAPI application with Poridhi's Load Balancer, first find your wt0 IP address by running `ifconfig` and looking for the `wt0` interface. Note the IP address (something like `100.125.246.186`).
+
+![alt text](image-3.png)
+
+**Create Load Balancer:**
+
+Go to Poridhi's Load Balancer dashboard, create a new Load Balancer, use your wt0 IP address with port 8000, and click "Create".
+
+![alt text](image-4.png)
+
+You'll receive a public URL like `https://lb-xxxxx.poridhi.io` that you can use to access your API from anywhere.
+
+### Step 11: Test the Login Flow
+
+Open Swagger UI at `<Load Balancer URL>/docs`.
+
+![alt text](image-5.png)
+
+**IMPORTANT:** Since Lab 2 is on a fresh VM, your database will be empty. You need to register users first before you can test login!
+
+**Step 11.1: Register a test user first**
+
+Before testing login, let's register a user. Click on `POST /register`, then "Try it out". Enter:
+
+```json
+{
+  "email": "alice@example.com",
+  "password": "SecurePass123!"
+}
+```
+
+Click "Execute". You should get a 201 Created response:
+
+```json
+{
+  "id": 1,
+  "email": "alice@example.com",
+  "is_active": true
+}
+```
+
+Register another user for additional testing:
+
+```json
+{
+  "email": "bob@example.com",
+  "password": "BobPassword456!"
+}
+```
+
+Now your database has users and you can test login.
+
+**Step 11.2: Test login with valid credentials**
 
 Click on `POST /login`, then "Try it out". Enter:
 
@@ -608,81 +712,62 @@ Click on `POST /login`, then "Try it out". Enter:
 
 You should get a response like:
 
-```json
-{
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbGljZUBleGFtcGxlLmNvbSIsImV4cCI6MTY3MDAwMDAwMH0...",
-  "token_type": "bearer"
-}
-```
+![alt text](image-6.png)
 
 Copy that access token - you'll need it for the next test.
 
-**Test 2: Access protected route**
+**Step 11.3: Access protected route**
 
-Click on the lock icon at the top right of Swagger UI, or click on `GET /users/me` and then the "Authorize" button. Paste your access token (just the token part, not including "bearer") and click "Authorize".
+Now let's use the access token to access a protected endpoint. With our HTTPBearer authentication, Swagger UI provides a simple way to authorize by directly pasting your token:
 
-Now execute `GET /users/me`. You should see:
+**How to authorize in Swagger UI:**
 
-```json
-{
-  "id": 1,
-  "email": "alice@example.com",
-  "is_active": true
-}
-```
+1. First, make sure you have copied the `access_token` value from your login response (from Step 11.2)
+2. Click the **"Authorize"** button at the top right of Swagger UI (you'll see a lock icon)
+3. You'll see a simple popup with a text field labeled **"Value"** or **"Bearer"**
+4. Paste your access token into this field (just the token, without the word "Bearer")
+5. Click **"Authorize"**
+6. Click **"Close"**
 
-**Test 3: Try accessing without authentication**
+![alt text](image-7.png)
+
+You'll see the lock icon change from unlocked to locked, indicating you're now authorized. Swagger UI will automatically include your token in the Authorization header for all subsequent requests.
+
+Now execute `GET /users/me`. Click "Try it out", then "Execute". You should see:
+
+![alt text](image-8.png)
+
+**Step 11.4: Try accessing without authentication**
 
 Log out in Swagger UI (click the lock icon and "Logout"). Try to execute `GET /users/me` again. You should get:
 
-```json
-{
-  "detail": "Not authenticated"
-}
+![alt text](image-9.png)
+
+### Step 12: Test with curl
+
+You can also test using curl from your command line.
+
+**First, register a user (since database is empty on fresh VM):**
+
+```bash
+curl -X POST "<Load Balancer URL>/register" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "charlie@example.com",
+    "password": "CharliePass123!"
+  }'
 ```
 
-**Test 4: Login with wrong password**
+You should get a 201 response with the user details.
 
-Try logging in with:
-
-```json
-{
-  "email": "alice@example.com",
-  "password": "WrongPassword"
-}
-```
-
-You should get a 401 error:
-
-```json
-{
-  "detail": "Incorrect email or password"
-}
-```
-
-**Test 5: Login with non-existent email**
-
-```json
-{
-  "email": "nonexistent@example.com",
-  "password": "SomePassword"
-}
-```
-
-Same 401 error. Notice we don't reveal whether the email exists - this prevents user enumeration attacks.
-
-### Step 9: Test with curl
-
-You can also test using curl from your command line:
-
-**Login:**
+**Now login with the registered user:**
 
 ```bash
 curl -X POST "<Load Balancer URL>/login" \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "alice@example.com",
-    "password": "SecurePass123!"
+    "email": "charlie@example.com",
+    "password": "CharliePass123!"
   }'
 ```
 
@@ -710,7 +795,7 @@ curl -X GET "<Load Balancer URL>/users/me" \
 
 You'll get a "Could not validate credentials" error.
 
-### Step 10: Decode and Inspect a JWT
+### Step 13: Decode and Inspect a JWT
 
 To understand what's inside your JWT, you can decode it manually. JWTs are just Base64-encoded strings, so you can decode them without the secret key (though you can't verify the signature without it).
 
@@ -750,7 +835,7 @@ Signature (hex): Kq1X8JJ5vY8pN2Q3R4...
 
 You can also use online tools like jwt.io to decode tokens (but never paste production tokens into third-party websites!).
 
-### Step 11: Verify Token Expiration
+### Step 14: Verify Token Expiration
 
 Let's verify that tokens actually expire. Temporarily change your token expiration to 1 minute in `.env`:
 
@@ -774,7 +859,7 @@ Change the expiration back to 30 minutes for normal use:
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 ```
 
-### Step 12: Understanding the Request Lifecycle
+### Step 15: Understanding the Request Lifecycle
 
 Let's trace what happens when you call `GET /users/me` with a valid token:
 
@@ -789,8 +874,9 @@ Let's trace what happens when you call `GET /users/me` with a valid token:
    - Runs `get_current_user()` before executing the route handler
 
 3. **get_current_user() runs:**
-   - Calls `oauth2_scheme` dependency first
-   - OAuth2PasswordBearer extracts token from Authorization header
+   - Calls `security` (HTTPBearer) dependency first
+   - HTTPBearer extracts token from Authorization header
+   - Gets the token from the credentials object
    - Passes token to `verify_token()`
 
 4. **verify_token() validates:**
@@ -816,98 +902,6 @@ Let's trace what happens when you call `GET /users/me` with a valid token:
 
 If any step fails (token missing, signature invalid, expired, user not found), the process stops and returns 401 Unauthorized. The route handler never executes.
 
-### Step 13: Add More Protected Routes
-
-Now that you have the authentication infrastructure, you can easily protect other routes. Let's add a few more examples to `app/main.py`:
-
-```python
-@app.get("/users/me/status")
-def get_user_status(current_user: User = Depends(get_current_user)):
-    return {
-        "email": current_user.email,
-        "is_active": current_user.is_active,
-        "message": f"Hello {current_user.email}! Your account is {'active' if current_user.is_active else 'inactive'}."
-    }
-
-
-@app.put("/users/me/deactivate")
-def deactivate_account(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    current_user.is_active = False
-    db.commit()
-
-    return {"message": "Account deactivated successfully"}
-```
-
-Both routes are protected by the same `Depends(get_current_user)` dependency. You can add it to any route that should require authentication.
-
-## Common Issues and Troubleshooting
-
-**Issue 1: "Could not validate credentials" immediately after login**
-
-This usually means your JWT_SECRET in the .env file doesn't match between encoding and decoding. Make sure you didn't change it between runs. Restart your server after changing environment variables.
-
-**Issue 2: Token works in Swagger but not with curl**
-
-Check your Authorization header format. It must be exactly:
-```
-Authorization: Bearer <token>
-```
-
-Note the space after "Bearer". Don't include quotes around the token.
-
-**Issue 3: "Not authenticated" error**
-
-This means the Authorization header is missing or malformed. Make sure you're including it in every request to protected routes.
-
-**Issue 4: Login returns 401 for correct password**
-
-Check that your database still has the user from Lab 1. Query it:
-
-```bash
-docker compose exec db psql -U postgres -d auth_lab1_db -c "SELECT email FROM users;"
-```
-
-If empty, register a new user first.
-
-**Issue 5: Can't import jose**
-
-Make sure you installed the cryptography extra:
-
-```bash
-pip install "python-jose[cryptography]"
-```
-
-The brackets might need escaping in some shells:
-
-```bash
-pip install 'python-jose[cryptography]'
-```
-
-## Security Best Practices
-
-**Never log tokens** - Tokens are credentials. Logging them is like logging passwords. If you need to log authentication events, log the user ID or email, not the token.
-
-**Use HTTPS in production** - JWTs are not encrypted, just Base64-encoded. Anyone who intercepts one can use it until it expires. Always use HTTPS to protect tokens in transit.
-
-**Keep tokens short-lived** - The 30-minute expiration we're using is reasonable for most applications. For more sensitive operations, use shorter expiration times. We'll implement refresh tokens in Lab 3 to balance security with user experience.
-
-**Validate on every request** - Never assume a token is valid just because it was valid before. Always validate the signature and expiration on every request.
-
-**Protect your secret key** - Your JWT_SECRET is the key to your entire authentication system. Store it securely, never commit it to version control, and rotate it periodically. If it leaks, all existing tokens become compromised.
-
-**Consider token revocation** - In this basic implementation, tokens can't be revoked before they expire. In production, you might maintain a blacklist of revoked tokens in Redis, or use refresh tokens (Lab 3) where you can revoke the refresh token to force re-authentication.
-
-## Next Steps: Lab 3
-
-In Lab 3, we'll enhance this system with:
-
-- Refresh tokens for long-lived sessions
-- Automatic token refresh without requiring re-login
-- Token expiration handling on the client side
-- Dual-token architecture (short-lived access + long-lived refresh)
-
-These features make your authentication system production-ready while maintaining security.
-
 ## Conclusion
 
 Congratulations! You've implemented a complete JWT authentication system. Your users can now register, login to receive a token, and use that token to access protected resources. You understand how JWTs work under the hood - the three-part structure, how signatures prevent tampering, and why expiration is critical for security.
@@ -915,5 +909,3 @@ Congratulations! You've implemented a complete JWT authentication system. Your u
 You've also learned about FastAPI's dependency injection system and how to use it to create reusable authentication logic. The `get_current_user` dependency can protect any route simply by adding it to the function parameters. This makes your authentication system both secure and maintainable.
 
 The authentication flow you've built is stateless - your server doesn't need to store sessions or lookup tokens in a database on every request. It just validates the cryptographic signature. This makes your API scalable and works great in distributed systems where multiple servers handle requests.
-
-Ready for Lab 3? Let's implement refresh tokens and handle token expiration gracefully!
