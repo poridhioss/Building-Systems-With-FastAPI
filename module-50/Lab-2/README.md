@@ -643,19 +643,19 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 **Expected output:**
 
-![alt text](image-2.png)
+![alt text](./images/image-2.png)
 
 ### Step 10: Access FastAPI Application using Poridhi's Load Balancer
 
 To access the FastAPI application with Poridhi's Load Balancer, first find your wt0 IP address by running `ifconfig` and looking for the `wt0` interface. Note the IP address (something like `100.125.246.186`).
 
-![alt text](image-3.png)
+![alt text](./images/image-3.png)
 
 **Create Load Balancer:**
 
 Go to Poridhi's Load Balancer dashboard, create a new Load Balancer, use your wt0 IP address with port 8000, and click "Create".
 
-![alt text](image-4.png)
+![alt text](./images/image-4.png)
 
 You'll receive a public URL like `https://lb-xxxxx.poridhi.io` that you can use to access your API from anywhere.
 
@@ -663,7 +663,7 @@ You'll receive a public URL like `https://lb-xxxxx.poridhi.io` that you can use 
 
 Open Swagger UI at `<Load Balancer URL>/docs`.
 
-![alt text](image-5.png)
+![alt text](./images/image-5.png)
 
 **IMPORTANT:** Since Lab 2 is on a fresh VM, your database will be empty. You need to register users first before you can test login!
 
@@ -712,7 +712,7 @@ Click on `POST /login`, then "Try it out". Enter:
 
 You should get a response like:
 
-![alt text](image-6.png)
+![alt text](./images/image-6.png)
 
 Copy that access token - you'll need it for the next test.
 
@@ -729,19 +729,19 @@ Now let's use the access token to access a protected endpoint. With our HTTPBear
 5. Click **"Authorize"**
 6. Click **"Close"**
 
-![alt text](image-7.png)
+![alt text](./images/image-7.png)
 
 You'll see the lock icon change from unlocked to locked, indicating you're now authorized. Swagger UI will automatically include your token in the Authorization header for all subsequent requests.
 
 Now execute `GET /users/me`. Click "Try it out", then "Execute". You should see:
 
-![alt text](image-8.png)
+![alt text](./images/image-8.png)
 
 **Step 11.4: Try accessing without authentication**
 
 Log out in Swagger UI (click the lock icon and "Logout"). Try to execute `GET /users/me` again. You should get:
 
-![alt text](image-9.png)
+![alt text](./images/image-9.png)
 
 ### Step 12: Test with curl
 

@@ -1,0 +1,80 @@
+
+❯ check out the demo lab @demo-lab.md so see how we at poridhi create labs  
+  for students. we are now creating labs for each model as a project. check 
+  out the labs instructions for module -50 at                               
+  @module-50\lab-instructions.md . The 3 folders are already created under  
+  the module-50 folder. you will write the lab contents in the readme file  
+  inside each lab folder. There are 3 labs in module 50 and each lab will   
+  be a continuation of the previous labs. Inorder to proceed with the       
+  implementattions of the previous labs, the studnets will use their own    
+  github accout to pull the implemented contents of the previous lab. also, 
+  a github repo link of the early implemented lab part done by poridihi     
+  team will be provided in the lab doc. this is also done so that students  
+  do not always have to implement all the previous labs in order to start   
+  doing the current lab. Lets start with the lab-1 doc first at             
+  @module-50\lab-1\README.md . remember to follow the lab instructions at   
+  @module-50\lab-instructions.md                                            
+
+
+❯ listen. i want you to understand something. what you wrote is ok but      
+  looks like they are very much ai generated content. there is too much use 
+  of bullet points in the way you have written. It looks very much          
+  informative when you write it in points but we dont always need that.     
+  instead it is prefered to explain things in a paragraph or explain        
+  something using multiple paragraphs if required. i mean of course you can 
+  use points if required but dont over use it. dont make the doc look       
+  robotic. make it look more natural as if it is written by a very          
+  knowledgeable and teachable person who knows how to explain things in     
+  simple english. i have omitted a lot unnecessary things in                
+  @module-50\lab-1\README.md .so reread it again before making changes i    
+  asked you to do.                                                          
+
+❯ oh and one more thing, in the step by step implementation part, do not    
+  use doc strings or multiline comments. it looks really odd. fix it        
+
+❯ Alright, my lab-1 is done. take a look at @module-50/lab-1/README.md      
+  again to finally how i have done it. however, architecture diagrams for   
+  lab-1 is still left, which we shall come back later. Let us now focus on  
+  lab-2. you can find the lab instructions here at                          
+  @module-50/lab-instructions.md for lab-2. try to also maintain the        
+  instructions i have you earlier regarding how you should write the lab    
+  contents. start here @module-50/Lab-2/README.md                           
+
+❯ you should also tell it in the instructions to start the databases using  
+  docker same as lab-1. also you skipped the load balancer part. it should  
+  be shown again same as lab-1. image-1 and image.png are two pitctures of  
+  the load balancers in lab-2. fix all these please.                        
+
+❯ moreover, can you please give a check on lab-1 if you have implemented a  
+  part of code of lab-2 in advance in lab-1                                 
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ moreover, can you please give a check on lab-1 if you have implemented a  
+  part of code of lab-2 in advance in lab-1? i am asking you this because   
+  lab -2 or next labs codes will only be implemented in the next labs. no   
+  need to implement it in advance. this is really really important to       
+  ensure. Moreover, One more very important thing, since each of the labs   
+  are a continuation of the previous ones, when you modify/change/add a     
+  file, only add what you are adding or modifying. add the entire modified  
+  file because the changes are not clearly noticed by the learners because  
+  of this. now when you are adding a entire new file, thats a different     
+  case. so fix these issues of lab-2 as well.                               
+
+❯ in lab-2, in the implemented codes, you should indicate in comments which 
+  parts are you newly adding.                                               
+
+❯ now start with lab 3 
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ always understand that what ever the user did in lab-1 will not be there  
+  in lab 2. because lab-2 will be a newly created vm than the lab-1. so for 
+  example, during the tests in the lab-2, users should be registered again  
+  before testing the login endpoints, please make necessary changes where   
+  necessary in lab-2                                                        
+
+
+❯ in lab 2, when i click authorization button, it asks for username,        
+  password, client_id, client_secret. where should i paste the access       
+  token?                                                                    
+
+❯ for the method 1, i dont see any field that says value or bearer token. 
