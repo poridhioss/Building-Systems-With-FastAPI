@@ -2,6 +2,8 @@
 
 Welcome to Lab 3! In the previous labs, you built a complete authentication system with user registration and JWT-based login. But there's a critical problem we haven't addressed yet: access tokens expire quickly (30 minutes), forcing users to log in repeatedly. In this lab, you'll implement a production-ready solution using refresh tokens that balance security with user convenience.
 
+![alt text](images/archi-diagrams/mod50-lab-3_high-level.drawio.svg)
+
 ## Objectives
 
 - Understand the security tradeoffs of token expiration

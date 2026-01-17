@@ -2,7 +2,7 @@
 
 Welcome to Lab 2! In the previous lab, you built a solid foundation by implementing secure user registration with password hashing. Now it's time to bring your authentication system to life. In this lab, you'll implement the login mechanism that issues JWT tokens and create protected routes that require authentication. This is where users can actually prove who they are and access secured resources.
 
-![Lab-2_high-level](https://raw.githubusercontent.com/poridhiEng/poridhi-labs/main/Poridhi%20Labs/Building%20Systems%20With%20FastAPI/module-50/lab-2/images/lab2-architecture.svg)
+![alt text](images/archi-diagrams/mod50-lab-2_high-level.drawio.svg)
 
 ## Objectives
 
@@ -30,7 +30,9 @@ A JWT consists of three parts separated by dots:
 
 ```
 eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbGljZUBleGFtcGxlLmNvbSIsImV4cCI6MTY3MDAwMDAwMH0.Kq1X8JJ5vY8pN2Q3R4S5T6U7V8W9X0Y1Z2A3B4C5D6E
-     ↑ Header                          ↑ Payload                                      ↑ Signature
+
+
+
 ```
 
 **Header** - This identifies which algorithm is used to generate the signature. It's Base64Url-encoded JSON that typically looks like:
@@ -100,7 +102,7 @@ Without the secret key, an attacker cannot create valid tokens. Even if they int
 
 In traditional session-based authentication, when a user logs in, the server creates a session ID and stores session data in memory or a database. The session ID is sent to the client (usually as a cookie), and on each request, the server looks up the session to verify the user.
 
-```
+<!-- ```
 Session-Based:
 Client                  Server                    Database
   │                      │                           │
@@ -132,7 +134,7 @@ Client                  Server                    Database
   │                      │ (Verify signature)         │
   │                      ├─Optional: Fetch user data>│ (Only if needed)
   │<───Response──────────┤                           │
-```
+``` -->
 
 The key difference is that JWT doesn't require server-side storage. This makes it scalable - your API can handle millions of requests without maintaining session state. It also works great for microservices where multiple servers handle requests and you don't want to share session storage between them.
 

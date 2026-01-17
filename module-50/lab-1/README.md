@@ -2,7 +2,7 @@
 
 Welcome to Lab 1 of the Authentication & Authorization series! In this lab, you'll build the foundation of a secure authentication system by implementing user registration with proper password security. You'll learn how to safely store user credentials using industry-standard password hashing, set up a PostgreSQL database with Docker, and create a registration API endpoint.
 
-![Lab-1_high-level](https://raw.githubusercontent.com/poridhiEng/poridhi-labs/main/Poridhi%20Labs/Building%20Systems%20With%20FastAPI/module-50/lab-1/images/lab1-architecture.svg)
+![alt text](images/archi-diagrams/mod50-lab-1_high-level.drawio.svg)
 
 ## Objectives
 
@@ -22,24 +22,6 @@ Welcome to Lab 1 of the Authentication & Authorization series! In this lab, you'
 Authentication is the process of verifying the identity of a user. Every modern application needs to identify who is accessing the system, protect resources so that only authorized users can access specific data, maintain user trust by handling their credentials responsibly, and comply with regulations like GDPR and CCPA that require proper data protection.
 
 The golden rule of password security is simple: **NEVER store passwords in plain text!** If anyone with database access can read passwords directly, you're putting every user at risk. Imagine if a hacker breaches your database and finds this:
-
-```
-❌ BAD (Plain Text):
-users table:
-┌────┬──────────────────────┬──────────┐
-│ id │ email                │ password │
-├────┼──────────────────────┼──────────┤
-│ 1  │ alice@example.com    │ mypass123│  ← Anyone with DB access sees the password!
-└────┴──────────────────────┴──────────┘
-
-✅ GOOD (Hashed):
-users table:
-┌────┬──────────────────────┬─────────────────────────────────────────────────────────┐
-│ id │ email                │ hashed_password                                         │
-├────┼──────────────────────┼─────────────────────────────────────────────────────────┤
-│ 1  │ alice@example.com    │ $2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyE... │
-└────┴──────────────────────┴─────────────────────────────────────────────────────────┘
-```
 
 ### What is Password Hashing?
 
@@ -712,10 +694,6 @@ docker compose exec db psql -U postgres -d auth_lab1_db -c "SELECT id, email, ha
 ![alt text](./images/image-7.png)
 
 Look at those hashed_password values. Each one starts with "$2b$12$", which tells you it's a bcrypt hash with work factor 12. Notice that even if two users had chosen the same password, their hashes would be completely different because bcrypt adds a unique salt to each one. You cannot reverse these hashes to get the original passwords - it's mathematically infeasible. And all the hashes are roughly the same length (around 60 characters), regardless of how long the original password was.
-
-## Next Steps: Preparing for Lab 2
-
-Lab-2 is a continuation of lab-1. So, you are requested to sign in to github inside poridhi VM, and push the codes to a repository so that you can use it in the later labs. Otherwise, you can also use the content pushed by the poridhi team, which you shall later find in lab-2.
 
 ## Conclusion
 
