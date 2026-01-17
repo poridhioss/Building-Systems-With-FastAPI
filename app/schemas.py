@@ -22,11 +22,17 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
+class TokenData(BaseModel):
+    email: Optional[str] = None
 
+
+# ========== UPDATED IN LAB 3 ==========
 class Token(BaseModel):
     access_token: str
+    refresh_token: str  # NEW: now includes refresh token
     token_type: str
 
 
-class TokenData(BaseModel):
-    email: Optional[str] = None
+# ========== NEW IN LAB 3 ==========
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
