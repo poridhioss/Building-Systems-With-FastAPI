@@ -2,7 +2,7 @@
 
 Welcome to Lab 1 of the Authentication & Authorization series! In this lab, you'll build the foundation of a secure authentication system by implementing user registration with proper password security. You'll learn how to safely store user credentials using industry-standard password hashing, set up a PostgreSQL database with Docker, and create a registration API endpoint.
 
-![Lab-1_high-level](https://raw.githubusercontent.com/poridhiEng/poridhi-labs/main/Poridhi%20Labs/Building%20Systems%20With%20FastAPI/module-50/lab-1/images/lab1-architecture.svg)
+![alt text](images/archi-diagrams/mod50-lab-1_high-level.drawio.svg)
 
 ## Objectives
 
@@ -23,24 +23,6 @@ Authentication is the process of verifying the identity of a user. Every modern 
 
 The golden rule of password security is simple: **NEVER store passwords in plain text!** If anyone with database access can read passwords directly, you're putting every user at risk. Imagine if a hacker breaches your database and finds this:
 
-```
-❌ BAD (Plain Text):
-users table:
-┌────┬──────────────────────┬──────────┐
-│ id │ email                │ password │
-├────┼──────────────────────┼──────────┤
-│ 1  │ alice@example.com    │ mypass123│  ← Anyone with DB access sees the password!
-└────┴──────────────────────┴──────────┘
-
-✅ GOOD (Hashed):
-users table:
-┌────┬──────────────────────┬─────────────────────────────────────────────────────────┐
-│ id │ email                │ hashed_password                                         │
-├────┼──────────────────────┼─────────────────────────────────────────────────────────┤
-│ 1  │ alice@example.com    │ $2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyE... │
-└────┴──────────────────────┴─────────────────────────────────────────────────────────┘
-```
-
 ### What is Password Hashing?
 
 Hashing is a one-way cryptographic function that transforms a password into a fixed-length string of characters. Think of it like putting your password through a meat grinder - you can turn meat into ground beef, but you can't reassemble the original steak from the ground beef. The process is intentionally irreversible.
@@ -48,29 +30,16 @@ Hashing is a one-way cryptographic function that transforms a password into a fi
 Hashing has some important properties. First, it's one-way, meaning you cannot reverse the hash to get the original password. Second, it's deterministic, so the same password always produces the same hash. Third, different passwords produce different hashes, and fourth, the output is always the same length regardless of how long or short your input password is.
 
 **How it works:**
-```
-User enters: "mySecurePass123"
-        ↓
-    Hash Function (bcrypt)
-        ↓
-Output: "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyE..."
-```
+
+![alt text](images/archi-diagrams/mod50-lab-1_password-hashing.drawio.svg)
 
 You might wonder why we can't just reverse it. Well, hashing uses complex mathematical operations with multiple rounds of encryption, and information is intentionally lost during the process. Even if you have the hash, you simply cannot compute the original password from it. It's mathematically infeasible.
 
 When a user tries to log in later, we don't decrypt their stored password (because we can't). Instead, we take their login attempt, hash it the same way, and compare the two hashes. If they match, the password is correct.
 
 **Verification Process:**
-```
-Login attempt: User enters "mySecurePass123"
-        ↓
-Hash the input: bcrypt.hash("mySecurePass123")
-        ↓
-Compare: Does new hash match stored hash?
-        ↓
-    Yes → Allow login
-    No  → Deny login
-```
+
+![alt text](images/archi-diagrams/mod50-lab-1_password-verfication.drawio.svg)
 
 ### What is bcrypt?
 
@@ -81,14 +50,8 @@ What makes bcrypt special? Unlike regular hash functions that are designed to be
 bcrypt also automatically salts your passwords. A salt is random data added to the password before hashing, which ensures that even if two users have the same password, they'll have different hashes. This prevents rainbow table attacks, where attackers use precomputed tables of common password hashes.
 
 **bcrypt anatomy:**
-```
-$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyE...
-│  │  │  │                                    │
-│  │  │  └─ Salt (random data)                └─ Hash
-│  │  └─ Work factor (2^12 = 4096 rounds)
-│  └─ bcrypt version
-└─ Algorithm identifier
-```
+
+![alt text](images/archi-diagrams/mod50-lab-1_bcrypt-anatomy.drawio.svg)
 
 The work factor (also called cost factor) determines how many iterations the algorithm runs. The default is 12, which means 4,096 iterations. A higher work factor makes hashing slower and more secure. Each increment doubles the computation time, so work factor 13 would take twice as long as 12. For web applications, 12-14 is recommended as it balances security with acceptable response times.
 
@@ -712,10 +675,6 @@ docker compose exec db psql -U postgres -d auth_lab1_db -c "SELECT id, email, ha
 ![alt text](./images/image-7.png)
 
 Look at those hashed_password values. Each one starts with "$2b$12$", which tells you it's a bcrypt hash with work factor 12. Notice that even if two users had chosen the same password, their hashes would be completely different because bcrypt adds a unique salt to each one. You cannot reverse these hashes to get the original passwords - it's mathematically infeasible. And all the hashes are roughly the same length (around 60 characters), regardless of how long the original password was.
-
-## Next Steps: Preparing for Lab 2
-
-Lab-2 is a continuation of lab-1. So, you are requested to sign in to github inside poridhi VM, and push the codes to a repository so that you can use it in the later labs. Otherwise, you can also use the content pushed by the poridhi team, which you shall later find in lab-2.
 
 ## Conclusion
 
