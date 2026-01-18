@@ -30,29 +30,16 @@ Hashing is a one-way cryptographic function that transforms a password into a fi
 Hashing has some important properties. First, it's one-way, meaning you cannot reverse the hash to get the original password. Second, it's deterministic, so the same password always produces the same hash. Third, different passwords produce different hashes, and fourth, the output is always the same length regardless of how long or short your input password is.
 
 **How it works:**
-```
-User enters: "mySecurePass123"
-        ↓
-    Hash Function (bcrypt)
-        ↓
-Output: "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyE..."
-```
+
+![alt text](images/archi-diagrams/mod50-lab-1_password-hashing.drawio.svg)
 
 You might wonder why we can't just reverse it. Well, hashing uses complex mathematical operations with multiple rounds of encryption, and information is intentionally lost during the process. Even if you have the hash, you simply cannot compute the original password from it. It's mathematically infeasible.
 
 When a user tries to log in later, we don't decrypt their stored password (because we can't). Instead, we take their login attempt, hash it the same way, and compare the two hashes. If they match, the password is correct.
 
 **Verification Process:**
-```
-Login attempt: User enters "mySecurePass123"
-        ↓
-Hash the input: bcrypt.hash("mySecurePass123")
-        ↓
-Compare: Does new hash match stored hash?
-        ↓
-    Yes → Allow login
-    No  → Deny login
-```
+
+![alt text](images/archi-diagrams/mod50-lab-1_password-verfication.drawio.svg)
 
 ### What is bcrypt?
 
@@ -63,14 +50,8 @@ What makes bcrypt special? Unlike regular hash functions that are designed to be
 bcrypt also automatically salts your passwords. A salt is random data added to the password before hashing, which ensures that even if two users have the same password, they'll have different hashes. This prevents rainbow table attacks, where attackers use precomputed tables of common password hashes.
 
 **bcrypt anatomy:**
-```
-$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyE...
-│  │  │  │                                    │
-│  │  │  └─ Salt (random data)                └─ Hash
-│  │  └─ Work factor (2^12 = 4096 rounds)
-│  └─ bcrypt version
-└─ Algorithm identifier
-```
+
+![alt text](images/archi-diagrams/mod50-lab-1_bcrypt-anatomy.drawio.svg)
 
 The work factor (also called cost factor) determines how many iterations the algorithm runs. The default is 12, which means 4,096 iterations. A higher work factor makes hashing slower and more secure. Each increment doubles the computation time, so work factor 13 would take twice as long as 12. For web applications, 12-14 is recommended as it balances security with acceptable response times.
 
