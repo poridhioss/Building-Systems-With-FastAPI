@@ -338,7 +338,7 @@ pip install -r requirements.txt
 
 You need to apply all existing migrations before creating a new one:
 
-# First, apply all existing migrations
+First, apply all existing migrations
 
 ```bash
 alembic upgrade head
