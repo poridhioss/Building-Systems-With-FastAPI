@@ -27,28 +27,7 @@ Because we are using Docker, the transition from Poridhi Cloud to AWS EC2 will b
 
 ## Step-by-Step Implementation Guide
 
-### Step 1: Get the Lab 1 Code on Poridhi VM
-
-Since this is a fresh Poridhi VM, you need to get the containerized application code from Lab 1 first.
-
-**Option 1: Clone from Poridhi's GitHub (Recommended)**
-
-```bash
-git clone https://github.com/poridhioss/Building-Systems-With-FastAPI.git
-cd Building-Systems-With-FastAPI/
-git checkout -b mod-51/lab-1 origin/mod-51/lab-1
-```
-
-**Option 2: Use your own Lab 1 implementation**
-
-If you completed Lab 1 and pushed your code to GitHub, clone your own repository:
-
-```bash
-git clone https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
-cd YOUR_REPO_NAME
-```
-
-### Step 2: Transfer Your EC2 Key to Poridhi VM
+### Step 1: Transfer Your EC2 Key to Poridhi VM
 
 You downloaded your EC2 `.pem` key file to your local machine, but now you need it on your Poridhi VM to SSH into the EC2 instance. Since you can't directly upload files to Poridhi VM, you'll copy-paste the contents.
 
@@ -82,7 +61,7 @@ AWS requires your key file to be read-only:
 chmod 400 aws-key.pem
 ```
 
-### Step 3: SSH into EC2 Instance from Poridhi VM
+### Step 2: SSH into EC2 Instance from Poridhi VM
 
 Now connect to your EC2 instance from the Poridhi VM. Replace `YOUR_EC2_PUBLIC_IP` with your actual EC2 public IP address:
 
@@ -94,7 +73,7 @@ If asked *"Are you sure you want to continue connecting?"*, type `yes` and hit E
 
 ---
 
-### Step 4: Install Docker on EC2
+### Step 3: Install Docker on EC2
 
 Your fresh EC2 instance is a blank slate. It does not have Docker or Docker Compose installed yet. We need to set up the environment.
 
@@ -140,7 +119,7 @@ newgrp docker
 
 ---
 
-### Step 5: Get the Application Code on EC2
+### Step 4: Get the Application Code on EC2
 
 **Option A: Clone from Poridhi's GitHub (Recommended)**
 
@@ -161,7 +140,7 @@ cd YOUR_REPO_NAME
 
 ---
 
-### Step 6: Configure Environment Variables
+### Step 5: Configure Environment Variables
 
 Remember that we never commit `.env` files to Git. This means your EC2 instance currently has no idea what your secret keys or database settings are. We need to recreate the file.
 
@@ -194,7 +173,7 @@ Press `Ctrl+O`, `Enter` to save, then `Ctrl+X` to exit.
 
 ---
 
-### Step 7: Verify Docker Compose Configuration
+### Step 6: Verify Docker Compose Configuration
 
 Let's quickly verify our `docker-compose.yml` matches our AWS needs. Since we are running the DB in a container (not RDS), the file from Lab 1 should work perfectly without changes.
 
@@ -223,22 +202,22 @@ services:
 
 ---
 
-### Step 8: Build and Launch
+### Step 7: Build and Launch
 
 Now comes the magic of "Lift and Shift." Because we have a Dockerfile, we don't need to install Python, Virtual Environments, or Pip on the EC2 instance directly. Docker handles it all.
 
-**8.1 Build the images:**
+**7.1 Build the images:**
 ```bash
 docker compose build
 ```
 *Note: This might take a minute or two as the EC2 instance downloads the Python base image and installs dependencies.*
 
-**8.2 Run the stack in Detached Mode:**
+**7.2 Run the stack in Detached Mode:**
 ```bash
 docker-compose up -d
 ```
 
-**8.3 Verify Deployment:**
+**7.3 Verify Deployment:**
 Check that containers are running:
 ```bash
 docker-compose ps
@@ -259,35 +238,35 @@ You should see Alembic migrations running and uvicorn starting successfully.
 
 ---
 
-    ### Step 9: Configure AWS Security Group
+### Step 8: Configure AWS Security Group
 
-    Your application is running on the server, but AWS puts a "Firewall" around your EC2 instance by default. It usually allows SSH (Port 22), but blocks everything else. We need to open Port **8000**.
+Your application is running on the server, but AWS puts a "Firewall" around your EC2 instance by default. It usually allows SSH (Port 22), but blocks everything else. We need to open Port **8000**.
 
-    1.  Go to the **AWS Console** in your browser.
-    2.  Navigate to **EC2** > **Instances**.
-    3.  Select your instance.
-    4.  Click the **Security** tab in the bottom details pane.
-    5.  Click the **Security Group ID** (e.g., `sg-01234abc...`).
-    6.  Click **Edit inbound rules**.
-    7.  Click **Add rule**:
-        *   **Type:** Custom TCP
-        *   **Port range:** `8000`
-        *   **Source:** Anywhere-IPv4 (`0.0.0.0/0`)
-    8.  Click **Save rules**.
+1.  Go to the **AWS Console** in your browser.
+2.  Navigate to **EC2** > **Instances**.
+3.  Select your instance.
+4.  Click the **Security** tab in the bottom details pane.
+5.  Click the **Security Group ID** (e.g., `sg-01234abc...`).
+6.  Click **Edit inbound rules**.
+7.  Click **Add rule**:
+    *   **Type:** Custom TCP
+    *   **Port range:** `8000`
+    *   **Source:** Anywhere-IPv4 (`0.0.0.0/0`)
+8.  Click **Save rules**.
 
 ![alt text](./images/image-4.png)
 
 ---
 
-### Step 10: Test Your Deployed Application with Postman
+### Step 9: Test Your Deployed Application with Postman
 
 Now your API is live and accessible directly via the EC2 public IP! Unlike Lab 1, you don't need a Poridhi Load Balancer - you're accessing the EC2 instance directly.
 
-**10.1 Get your Public IP:**
+**9.1 Get your Public IP:**
 
 Go to the EC2 Instances dashboard in AWS Console and copy the **Public IPv4 address** of your instance.
 
-**10.2 Quick health check:**
+**9.2 Quick health check:**
 
 Open a browser and navigate to:
 ```
@@ -298,7 +277,7 @@ You should see:
 
 ![alt text](./images/image-5.png)
 
-**10.3 Comprehensive Postman Tests:**
+**9.3 Comprehensive Postman Tests:**
 
 Open Postman on your local machine. We'll test the complete authentication flow. Throughout these tests, replace `YOUR_EC2_PUBLIC_IP` with your actual EC2 public IP address.
 
@@ -414,7 +393,7 @@ Congratulations! Your application is running on AWS EC2 and all authentication e
 
 ---
 
-### Step 11: Persistence Test (The "Crash" Simulation)
+### Step 10: Persistence Test (The "Crash" Simulation)
 
 One of the benefits of Docker volumes is data persistence. Let's prove that your data survives a server restart.
 
