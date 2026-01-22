@@ -1,8 +1,8 @@
 # Lab 1 – Containerization & Cloud Deployment
 
-Welcome to Module 51! In Module 50, you built a complete authentication system with user registration, JWT login, and refresh tokens. But there's a problem - your application only runs while your terminal is open. If you close the terminal or the session ends, everything stops. In this module, you'll learn how to deploy your application to the cloud as a containerized service that runs reliably throughout your lab session.
+Welcome to Module 51! In Module 50, you built a complete authentication system with user registration, JWT login, and refresh tokens. In this module, you'll learn how to deploy your application to the cloud as a containerized service that runs reliably throughout your lab session.
 
-You've actually been using Poridhi Cloud throughout Module 50 without realizing it. Every time you used the Poridhi Load Balancer to expose your FastAPI application running on a Poridhi VM, you were deploying to Poridhi Cloud. The load balancer gave you a public URL like `https://lb-xxxxx.poridhi.io` that worked during your lab session. But your FastAPI application wasn't containerized - it stopped when you closed the terminal. In this lab, you'll package everything your application needs into a Docker image, orchestrate it with PostgreSQL using docker-compose, and deploy it as a managed service that runs reliably throughout the lab duration.
+You've actually been using Poridhi Cloud throughout Module 50 without realizing it. Every time you used the Poridhi Load Balancer to expose your FastAPI application running on a Poridhi VM, you were deploying to Poridhi Cloud. The load balancer gave you a public URL like `https://lb-xxxxx.poridhi.io` that worked during your lab session. But your FastAPI application wasn't containerized. In this lab, you'll package everything your application needs into a Docker image, orchestrate it with PostgreSQL using docker-compose, and deploy it as a managed service that runs reliably throughout the lab duration.
 
 ![alt text](images/archi-diagrams/mod-51_lab-1-archi.drawio.svg)
 
@@ -31,8 +31,6 @@ The key components you've been using are the Poridhi VM (a Linux virtual machine
 Poridhi Cloud is the perfect stepping stone between running on localhost and deploying to full-scale cloud platforms like AWS or Google Cloud. You get hands-on experience with containerized deployment without the complexity of managing infrastructure. You don't need to configure firewalls, set up SSL certificates, manage DNS, or deal with AWS billing surprises. Everything just works.
 
 In later labs, you'll move to AWS where you'll provision EC2 virtual machines, configure security groups, and manage networking. You'll also explore AWS Lambda for serverless deployment. But starting with Poridhi Cloud lets you focus on containerization and deployment patterns first, without the overhead of cloud infrastructure management.
-
-The workflow is simple: you run Docker containers on a Poridhi VM, expose a port, create a load balancer pointing to that port, and you have a publicly accessible application. This same containerization approach will work on any cloud platform, but Poridhi makes the infrastructure side effortless.
 
 ### What You'll Build
 

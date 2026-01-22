@@ -19,8 +19,7 @@ Because we are using Docker, the transition from Poridhi Cloud to AWS EC2 will b
 ## Prerequisites
 
 1.  **Completed Module 51 Lab 1:** You need the containerized application code (Dockerfile, docker-compose.yml) from the previous lab.
-2.  **Active Poridhi VM:** You should have a running Poridhi VM where you'll work from.
-3.  **Active AWS EC2 Instance:**
+2.  **Active AWS EC2 Instance:**
     *   You should have already launched an **Ubuntu** EC2 instance through AWS Console.
     *   You must have downloaded the `.pem` key file to your local machine.
     *   You must know the **Public IPv4 address** of your EC2 instance.
