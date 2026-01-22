@@ -14,19 +14,21 @@ Since there are three distinct deployment strategies listed in the objectives, i
     *   A valid `Dockerfile`.
     *   A live, public URL (This is basically the poridhi load balancer URL) where the `/health` endpoint returns `200 OK`.
 
-#### **Lab 2: Traditional Infrastructure on AWS (EC2 & RDS)**
-**Context:** This is the "DevOps" lab. Students will manually provision a virtual machine and a production-grade database, then connect them.
+### **Lab 2: Containerized Deployment on AWS EC2**
+**Context:** This is the "Infrastructure as a Service" (IaaS) lab. Unlike Lab 1 where the platform managed the container, here students will manage the server themselves. They will verify that the exact same Docker setup from Lab 1 works on a live AWS server by manually installing the Docker runtime and deploying the stack.
 
 *   **Goals:**
-    *   **Database Provisioning:** Launch an **AWS RDS** instance (PostgreSQL) and configure Security Groups to allow connections.
-    *   **Server Provisioning:** Launch an **AWS EC2** instance (Linux/Ubuntu) and SSH into it.
-    *   **Production Setup:** Install Python/Pip on the server, clone the code, and use a production server (like Gunicorn or Uvicorn with workers) and a process manager (Systemd) to keep the app running in the background.
-    *   **Connection:** Update the API configuration to connect to the RDS endpoint instead of the local file.
+    *   **Environment Setup:** Connect to an existing **AWS EC2** instance (Ubuntu) and install the Docker Engine and Docker Compose plugin.
+    *   **Code Migration:** Clone the application repository directly onto the remote server.
+    *   **Configuration:** Manually create the production `.env` file on the server (handling secrets securely).
+    *   **Network Security:** Configure **AWS Security Groups** to expose Port 8000 (FastAPI) to the public internet while keeping the Database (Port 5432) internal.
+    *   **Deployment:** Launch the full stack (App + DB) using `docker compose up -d` in a production environment.
 *   **Deliverables:**
-    *   A screenshot of the RDS dashboard showing the database is "Available."
+    *   A screenshot of the terminal showing `docker ps` with both the **App** and **Postgres** containers running on the EC2 instance.
     *   The command used to SSH into the EC2 instance.
-    *   A public IP address for the EC2 instance where the API is accessible.
-    *   **Verification:** Creating a user via the API and seeing that user appear in the RDS database (using a tool like PgAdmin or DBeaver).
+    *   The public IP address (or URL) of the EC2 instance where the API is accessible.
+    *   **Verification:** A successful Postman request to the EC2 Public IP (e.g., `/login`) confirming the API is reachable and the database is persisting data.
+
 
 #### **Lab 3: Serverless Refactoring (AWS Lambda)**
 **Context:** Finally, students will adapt their API for the "Serverless" era. Since Lambda doesn't listen on a port like a standard server, they need to "wrap" their FastAPI app so AWS can talk to it.
