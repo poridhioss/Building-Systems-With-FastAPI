@@ -1,0 +1,44 @@
+# Virtual environment - we'll install packages fresh in the container
+.venv
+venv
+env
+
+# Python cache files - will be regenerated in container
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Git directory - no need for version control inside container
+.git
+.gitignore
+
+# IDE settings - not needed in container
+.vscode
+.idea
+*.swp
+*.swo
+
+# Environment files - these will be injected at runtime
+.env
+
+# Docker files - no need for these inside the container
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Documentation - not needed for running the app
+README.md
+*.md
+
+# Test files - we're building a production image
+tests/
+test_*.py
+*_test.py
+
+# macOS system files
+.DS_Store
+
+# Alembic compiled files
+alembic/__pycache__

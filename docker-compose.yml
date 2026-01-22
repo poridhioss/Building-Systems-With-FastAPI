@@ -1,9 +1,10 @@
 version: "3.9"
 
 services:
+  # PostgreSQL database service (FROM LAB 1)
   db:
     image: postgres:16
-    container_name: auth_lab1_postgres
+    container_name: auth_postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -11,12 +12,40 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata_auth_lab1:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d auth_lab1_db"]
       interval: 5s
       timeout: 5s
       retries: 20
+    networks:
+      - auth_network
 
+  # FastAPI application service (NEW IN MODULE 51 LAB 1)
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: auth_fastapi
+    env_file:
+      - .env
+    environment:
+      # Override DATABASE_URL to use Docker service name instead of localhost
+      - DATABASE_URL=postgresql+psycopg2://postgres:postgres@db:5432/auth_lab1_db
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - auth_network
+    restart: unless-stopped
+
+# Define volumes for persistent data
 volumes:
-  pgdata_auth_lab1:
+  pgdata:
+
+# Define network for service communication
+networks:
+  auth_network:
+    driver: bridge
