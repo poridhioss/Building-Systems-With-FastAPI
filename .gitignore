@@ -27,3 +27,6 @@ Thumbs.db
 
 # Alembic
 alembic/versions/*.pyc
+
+demo-file.txt
+system.txt
