@@ -13,7 +13,7 @@ Here's the core problem we're solving: when your application needs to do somethi
 - This decouples fast operations (responding to users) from slow operations (heavy processing)
 
 
-## Learning Objectives
+## Objectives
 
 By the end of this lab, you will:
 
