@@ -6,6 +6,13 @@ Here's the core problem we're solving: when your application needs to do somethi
 
 ![alt text](images/archi-diagrams/Mod52_lab-1_high-level-diagram.drawio.svg)
 
+**Key Concept - "Fire and Forget":**
+- Producer sends the task and gets a Task ID back **immediately** (in milliseconds)
+- Producer doesn't wait for the task to complete
+- Worker runs independently in the background, processing tasks as they arrive
+- This decouples fast operations (responding to users) from slow operations (heavy processing)
+
+
 ## Learning Objectives
 
 By the end of this lab, you will:
