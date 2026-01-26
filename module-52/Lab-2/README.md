@@ -24,12 +24,6 @@ By the end of this lab, you will:
 4. Build a client script that polls task status and retrieves results
 5. Observe the complete lifecycle: task submission → processing → result storage → result retrieval
 
-## Prerequisites
-
-- Completion of Lab 1 concepts (you understand Producer, Broker, Worker)
-- Fresh VM with Python 3.8+ installed
-- Docker and docker-compose installed
-
 ## What's New in Lab 2
 
 In Lab 1, we had:
