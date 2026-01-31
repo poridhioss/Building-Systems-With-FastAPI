@@ -720,6 +720,33 @@ With async task processing, the same API server can handle 100 concurrent reques
 
 You might have noticed something interesting: the Application Factory pattern with the `ContextTask` wrapper seems like a lot of setup. Is it really necessary? Let's find out.
 
+### The Application Context Problem
+
+![alt text](images/archi-diagrams/mod-53_lab-1_application-context.drawio.svg)
+
+**The Problem:**
+
+Flask applications use **Application Context**—a special environment where Flask stores configuration, database connections, and extensions. When you handle an HTTP request, Flask automatically creates this context.
+
+But Celery workers run in **separate processes**—they don't have Flask's application context by default. If a task tries to access `current_app.config`, `db.session`, or any Flask feature, it crashes with:
+
+```
+RuntimeError: Working outside of application context
+```
+
+**The Solution:**
+
+The `ContextTask` wrapper manually creates Flask's application context before running each task:
+
+```python
+class ContextTask(celery.Task):
+    def __call__(self, *args, **kwargs):
+        with app.app_context():  # Creates Flask context
+            return self.run(*args, **kwargs)  # Runs task inside context
+```
+
+This ensures tasks can safely use Flask features like config, database, and extensions.
+
 **Experiment: Comment Out the ContextTask Wrapper**
 
 Open `celery_utils.py` and comment out the ContextTask wrapper:
