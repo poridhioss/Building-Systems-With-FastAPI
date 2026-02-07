@@ -8,63 +8,30 @@ In this lab, you'll transform your basic task queue into a production-ready syst
 
 ## Architecture Diagram
 
-The architecture remains the same as Module 53, but now tasks have additional reliability features:
+The architecture builds upon Module 53 by adding a comprehensive reliability layer around task execution:
 
-```mermaid
-graph TB
-    subgraph "Client Terminal"
-        A[Submit Task]
-        B[Check Status]
-    end
+![alt text](images/archi-diagrams/mod-54_high-level.drawio.svg)
 
-    subgraph "Flask Application :5000"
-        C[Routes]
-        D[Task Queue]
-        E[Status Endpoint]
-    end
+**Key Reliability Mechanisms:**
 
-    subgraph "Redis :6379"
-        F[(Database 0<br/>Broker)]
-        G[(Database 1<br/>Result Backend)]
-    end
+1. **Logging (Blue Boxes)** - Every task lifecycle event is logged with timestamps:
+   - Task start, success, error, retry scheduled, max retries exhausted
+   - Enables debugging and monitoring in production
 
-    subgraph "Celery Worker with Reliability"
-        H[Poll Tasks]
-        I[Execute with:<br/>- Retry Logic<br/>- Timeout Enforcement<br/>- Error Handling<br/>- Logging]
-        J{Success?}
-        K[Retry with Backoff]
-        L[Write Result/Error]
-    end
+2. **Timeout Enforcement (Yellow Diamond)** - Prevents runaway tasks:
+   - Soft limit: Raises `SoftTimeLimitExceeded` for graceful cleanup (8-25s)
+   - Hard limit: Forcefully terminates task if cleanup takes too long (10-30s)
 
-    A --> C
-    C --> D
-    D --> F
-    C --> A
+3. **Retry Logic (Orange Path)** - Handles transient failures automatically:
+   - Decision point checks if retries remain (`retries < max_retries`)
+   - Exponential backoff: 5s → 10s → 20s between attempts
+   - Task requeued to broker for later execution
 
-    H --> F
-    F --> I
-    I --> J
-    J -->|Transient Error| K
-    K --> F
-    J -->|Success/Permanent Error| L
-    L --> G
-
-    B --> E
-    E --> G
-    E --> B
-
-    style K fill:#ffd43b
-    style I fill:#51cf66
-    style L fill:#4ecdc4
-```
-
-**What's New in Module 54:**
-
-Tasks now execute inside a reliability layer that:
-1. **Retries failures automatically** - Transient errors (network timeout) trigger retry with exponential backoff
-2. **Enforces timeouts** - Tasks exceeding time limits are terminated to free resources
-3. **Logs everything** - Start, success, failure, and retry events are logged with timestamps
-4. **Returns structured errors** - Failures include error messages accessible via status endpoint
+4. **Error Handling (Throughout)** - Structured responses for all outcomes:
+   - Success: Returns result data
+   - Timeout: Returns timeout message with attempted duration
+   - Failure after retries: Returns error message with retry count
+   - All errors stored in result backend for client retrieval
 
 ## Objectives
 
@@ -78,6 +45,160 @@ By the end of this lab, you will:
 6. Create tasks that simulate failures and timeouts for testing
 7. Observe retry attempts, timeout termination, and error states in worker logs
 8. Verify RETRY and FAILURE states via the status endpoint
+
+## Background: Understanding Reliability Features
+
+Before implementing these features, let's understand what each reliability mechanism does and why it matters in production systems.
+
+### 1. Retry Logic
+
+Retry logic handles transient failures—temporary errors that might succeed if you try again. Network timeouts, database deadlocks, and rate-limited API calls are classic examples. Without retries, a momentary network blip causes permanent task failure.
+
+**Key Concepts:**
+
+- **Max Retries**: Maximum number of retry attempts (e.g., `max_retries=3`)
+- **Retry Delay**: Time to wait before retrying (e.g., `default_retry_delay=5` seconds)
+- **Exponential Backoff**: Doubling the delay with each retry (5s → 10s → 20s) to avoid overwhelming the failing service
+- **Manual Retry**: Using `self.retry(exc=exc, countdown=delay)` to programmatically retry
+
+**Retry Flow with Exponential Backoff:**
+
+![alt text](images/archi-diagrams/mod-54_retry.drawio.svg)
+
+**When to Use Retries:**
+- Network requests to external APIs
+- Database operations that might deadlock
+- File operations that might have temporary locks
+- Any operation where the error might be temporary
+
+**When NOT to Use Retries:**
+- Validation errors (bad input won't fix itself)
+- Authentication failures (wrong credentials)
+- Resource not found errors (404s)
+- Business logic errors
+
+### 2. Timeout Enforcement
+
+Timeout enforcement prevents runaway tasks from consuming worker resources indefinitely. A buggy infinite loop or a hung network connection could block a worker forever without timeouts.
+
+**Key Concepts:**
+
+- **Soft Time Limit**: Raises `SoftTimeLimitExceeded` exception for graceful cleanup (e.g., `soft_time_limit=8`)
+- **Hard Time Limit**: Forcefully terminates the task process if cleanup takes too long (e.g., `time_limit=10`)
+- **Graceful Shutdown**: Catching the soft limit to close connections, save state, or return partial results
+
+**Timeout Enforcement Flow:**
+
+![alt text](images/archi-diagrams/mod-54_timeout.drawio.svg)
+
+**Implementation Pattern:**
+
+```python
+@celery.task(time_limit=10, soft_time_limit=8)
+def long_running_task(self):
+    try:
+        # Your task logic here
+        heavy_computation()
+    except SoftTimeLimitExceeded:
+        # Graceful cleanup
+        cleanup_resources()
+        return {"status": "timeout", "message": "Task exceeded time limit"}
+```
+
+**When to Set Timeouts:**
+- I/O operations (API calls, file downloads)
+- CPU-intensive computations
+- Any task that could potentially hang
+- Tasks that call external services with unpredictable response times
+
+### 3. Error Handling
+
+Error handling determines what happens when a task fails. Do you retry? Return an error message? Let it crash? Proper error handling makes the difference between a resilient system and one that silently swallows failures.
+
+**Key Concepts:**
+
+- **Try-Except Blocks**: Catch exceptions to control behavior
+- **Structured Error Responses**: Return dictionaries with error details instead of raising exceptions
+- **Error Propagation**: When to let errors bubble up vs. handling them
+- **Retry vs. Return**: Deciding whether to retry or return an error
+
+**Decision Guide:**
+
+| Error Type | Pattern | Reason |
+|------------|---------|--------|
+| Network timeout | Pattern 1 (Retry) | Might succeed on next attempt |
+| Database deadlock | Pattern 1 (Retry) | Usually resolves quickly |
+| Invalid input | Pattern 2 (Return error) | Won't fix itself |
+| Auth failure | Pattern 2 (Return error) | Requires user action |
+| Unexpected exception | Pattern 3 (Raise) | Needs investigation |
+| System error | Pattern 3 (Raise) | Should alert monitoring |
+
+### 4. Logging
+
+Logging provides visibility into task execution. Without logs, debugging failed tasks means guessing. With comprehensive logging, you have a complete audit trail of what happened and when.
+
+**Key Concepts:**
+
+- **Log Levels**: INFO (normal operation), WARNING (potential issues), ERROR (failures)
+- **Structured Logging**: Include context (task ID, user ID, attempt number)
+- **Lifecycle Events**: Log start, success, failure, retry, timeout
+- **Correlation**: Use consistent identifiers to trace a task through its lifecycle
+
+**What to Log:**
+
+1. **Task Start**: Task name, input parameters, task ID
+2. **Progress Milestones**: Key steps completed (useful for long tasks)
+3. **Success**: Completion message, duration, result summary
+4. **Errors**: Exception type, error message, attempt number
+5. **Retries**: Retry decision, countdown, total attempts
+6. **Timeouts**: Time limit exceeded, cleanup actions
+7. **API Calls**: Endpoint accessed, client info, status code
+
+**Logging Best Practices:**
+
+```python
+import logging
+logger = logging.getLogger(__name__)
+
+@celery.task(bind=True, max_retries=3)
+def example_task(self, user_id):
+    try:
+        # Log start with context
+        logger.info(f"example_task: Starting for user {user_id}, task_id={self.request.id}")
+
+        # Log progress
+        logger.info(f"example_task: Fetched user data for {user_id}")
+
+        result = do_work(user_id)
+
+        # Log success
+        logger.info(f"example_task: Completed for user {user_id}, duration=5.2s")
+        return result
+
+    except Exception as exc:
+        # Log error with full context
+        logger.error(
+            f"example_task: Failed for user {user_id}, "
+            f"error={exc}, attempt={self.request.retries + 1}/{self.max_retries}"
+        )
+        raise self.retry(exc=exc)
+```
+
+**Why Logging Matters:**
+
+When a task fails in production at 3am, logs answer:
+- What task failed? (`send_welcome_email`)
+- What input triggered it? (`user@example.com`)
+- When did it fail? (`2026-02-03 03:15:42`)
+- What error occurred? (`Connection timeout`)
+- Did it retry? How many times? (`3 retries, all failed`)
+- What was the final outcome? (`Max retries exhausted`)
+
+Without logs, you're blind. With proper logging, you have a complete story.
+
+---
+
+Now that you understand these four reliability mechanisms, let's implement them in a Flask-Celery application.
 
 ## Project Structure
 
