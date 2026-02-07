@@ -6,12 +6,8 @@ Without proper error handling, these failures disappear silently into logs. With
 
 In this lab, you'll transform your basic task queue into a production-ready system by adding four critical reliability features: automatic retries with exponential backoff, timeout enforcement to kill runaway tasks, comprehensive logging to track execution, and structured error handling to return meaningful failure messages to API clients.
 
-## Architecture Diagram
-
-The architecture builds upon Module 53 by adding a comprehensive reliability layer around task execution:
-
 ![alt text](images/archi-diagrams/mod-54_high-level.drawio.svg)
-
+<!-- 
 **Key Reliability Mechanisms:**
 
 1. **Logging (Blue Boxes)** - Every task lifecycle event is logged with timestamps:
@@ -31,7 +27,7 @@ The architecture builds upon Module 53 by adding a comprehensive reliability lay
    - Success: Returns result data
    - Timeout: Returns timeout message with attempted duration
    - Failure after retries: Returns error message with retry count
-   - All errors stored in result backend for client retrieval
+   - All errors stored in result backend for client retrieval -->
 
 ## Objectives
 
@@ -194,11 +190,7 @@ When a task fails in production at 3am, logs answer:
 - Did it retry? How many times? (`3 retries, all failed`)
 - What was the final outcome? (`Max retries exhausted`)
 
-Without logs, you're blind. With proper logging, you have a complete story.
-
----
-
-Now that you understand these four reliability mechanisms, let's implement them in a Flask-Celery application.
+Without logs, you're blind. With proper logging, you have a complete story. Now that you understand these four reliability mechanisms, let's implement them in a Flask-Celery application.
 
 ## Project Structure
 
@@ -844,7 +836,7 @@ curl -X POST http://localhost:5000/ping
 
 **Check Terminal 1 (Worker)** - you should see logs:
 
-![alt text](image.png)
+![alt text](./images/image.png)
 
 The timestamps and structured logging make it easy to track execution.
 
@@ -874,7 +866,7 @@ curl -X POST http://localhost:5000/test-reliability \
 
 **Example output (if task fails and retries):**
 
-![alt text](image-1.png)
+![alt text](./images/image-1.png)
 
 **Notice the exponential backoff**: First retry after 5 seconds, second retry after 10 seconds, third would be after 20 seconds.
 
@@ -887,7 +879,7 @@ curl http://localhost:5000/tasks/xyz-789-abc-123
 
 You might catch it in RETRY state:
 
-![alt text](image-2.png)
+![alt text](./images/image-2.png)
 
 After the task eventually succeeds (or exhausts retries), check status again:
 
@@ -897,7 +889,7 @@ curl http://localhost:5000/tasks/xyz-789-abc-123
 
 **If successful:**
 
-![alt text](image-3.png)
+![alt text](./images/image-3.png)
 
 **If all retries failed:**
 ```json
@@ -941,7 +933,7 @@ curl -X POST http://localhost:5000/test-timeout \
 
 **Watch Terminal 1 (Worker).** The task will start, then after 8 seconds hit the soft limit:
 
-![alt text](image-4.png)
+![alt text](./images/image-4.png)
 
 The task catches `SoftTimeLimitExceeded` and returns gracefully. If it didn't handle the exception, Celery would kill it at the 10-second hard limit.
 
@@ -953,7 +945,7 @@ curl http://localhost:5000/tasks/timeout-task-123
 
 **Response:**
 
-![alt text](image-5.png)
+![alt text](./images/image-5.png)
 
 The task "succeeded" in the sense that it handled the timeout gracefully and returned a structured response indicating what happened.
 
@@ -967,11 +959,11 @@ curl -X POST http://localhost:5000/test-timeout \
 
 **Worker output:**
 
-![alt text](image-6.png)
+![alt text](./images/image-6.png)
 
 **Status:**
 
-![alt text](image-7.png)
+![alt text](./images/image-7.png)
 
 This demonstrates that the timeout only enforces when exceeded.
 
