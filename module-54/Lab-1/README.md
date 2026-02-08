@@ -1,214 +1,50 @@
-# Lab 1: Adding Reliability Features to Celery Tasks
+## Introduction
 
-In Module 53, you built a Flask-Celery integration that can submit background tasks and check their status through a REST API. The system works perfectly when everything goes right—tasks execute successfully, and clients can retrieve results. But production environments are messy. External APIs timeout. Databases lock. Network connections drop. Tasks encounter unexpected data and raise exceptions.
+This lab teaches you to transform a basic Flask-Celery task queue into a production-ready system. Building on the async task processing from Module 53, you will implement automatic retries with exponential backoff, timeout enforcement, comprehensive logging, and structured error handling.
 
-Without proper error handling, these failures disappear silently into logs. Without retry logic, transient errors (like a temporary network glitch) cause permanent task failures. Without timeouts, a single buggy task can consume worker resources indefinitely. Without logging, debugging failed tasks becomes a nightmare of guesswork.
+By the end of this lab, you will have a resilient task queue that handles transient failures, prevents runaway tasks, logs execution lifecycle events, and returns meaningful error messages to API clients—essential features for production deployment.
 
-In this lab, you'll transform your basic task queue into a production-ready system by adding four critical reliability features: automatic retries with exponential backoff, timeout enforcement to kill runaway tasks, comprehensive logging to track execution, and structured error handling to return meaningful failure messages to API clients.
-
-![alt text](images/archi-diagrams/mod-54_high-level.drawio.svg)
-<!-- 
-**Key Reliability Mechanisms:**
-
-1. **Logging (Blue Boxes)** - Every task lifecycle event is logged with timestamps:
-   - Task start, success, error, retry scheduled, max retries exhausted
-   - Enables debugging and monitoring in production
-
-2. **Timeout Enforcement (Yellow Diamond)** - Prevents runaway tasks:
-   - Soft limit: Raises `SoftTimeLimitExceeded` for graceful cleanup (8-25s)
-   - Hard limit: Forcefully terminates task if cleanup takes too long (10-30s)
-
-3. **Retry Logic (Orange Path)** - Handles transient failures automatically:
-   - Decision point checks if retries remain (`retries < max_retries`)
-   - Exponential backoff: 5s → 10s → 20s between attempts
-   - Task requeued to broker for later execution
-
-4. **Error Handling (Throughout)** - Structured responses for all outcomes:
-   - Success: Returns result data
-   - Timeout: Returns timeout message with attempted duration
-   - Failure after retries: Returns error message with retry count
-   - All errors stored in result backend for client retrieval -->
+![Architecture Overview](images/archi-diagrams/mod-54_high-level.drawio.svg)
 
 ## Objectives
 
-By the end of this lab, you will:
+By the end of this lab, you will be able to:
 
 1. Configure automatic retry behavior with max retries and exponential backoff
 2. Implement manual retry logic using `self.retry()` for recoverable errors
 3. Set hard and soft timeout limits to prevent runaway tasks
 4. Add comprehensive logging to track task lifecycle events
 5. Implement structured error handling with try-except blocks
-6. Create tasks that simulate failures and timeouts for testing
+6. Create tasks that simulate failures and timeouts for testing purposes
 7. Observe retry attempts, timeout termination, and error states in worker logs
 8. Verify RETRY and FAILURE states via the status endpoint
 
-## Background: Understanding Reliability Features
+**Prerequisites:** Completion of Module 53 (Flask-Celery Integration) or familiarity with Flask, Celery, and REST APIs.
 
-Before implementing these features, let's understand what each reliability mechanism does and why it matters in production systems.
+---
 
-### 1. Retry Logic
+## Prologue: The Challenge
 
-Retry logic handles transient failures—temporary errors that might succeed if you try again. Network timeouts, database deadlocks, and rate-limited API calls are classic examples. Without retries, a momentary network blip causes permanent task failure.
+You join a development team maintaining a Flask-Celery task queue that processes background jobs: sending welcome emails, generating monthly reports, and performing data analysis. The system works perfectly in development—tasks execute successfully, and clients retrieve results without issues.
 
-**Key Concepts:**
+Then production happens. External email APIs timeout. Database queries lock. Network connections drop. A buggy task enters an infinite loop and consumes worker resources for hours. Tasks fail silently, leaving no trace in logs. Transient errors—like a 5-second network glitch—cause permanent task failures.
 
-- **Max Retries**: Maximum number of retry attempts (e.g., `max_retries=3`)
-- **Retry Delay**: Time to wait before retrying (e.g., `default_retry_delay=5` seconds)
-- **Exponential Backoff**: Doubling the delay with each retry (5s → 10s → 20s) to avoid overwhelming the failing service
-- **Manual Retry**: Using `self.retry(exc=exc, countdown=delay)` to programmatically retry
+The operations team escalates: "We have no visibility into what's failing. Tasks that should retry just die. We can't debug production failures because there are no logs."
 
-**Retry Flow with Exponential Backoff:**
+Your task is to add four critical reliability features:
 
-![alt text](images/archi-diagrams/mod-54_retry.drawio.svg)
+- **Automatic retries** with exponential backoff to handle transient failures
+- **Timeout enforcement** to kill runaway tasks before they consume resources
+- **Comprehensive logging** to track execution and debug failures
+- **Structured error handling** to return meaningful failure messages
 
-**When to Use Retries:**
-- Network requests to external APIs
-- Database operations that might deadlock
-- File operations that might have temporary locks
-- Any operation where the error might be temporary
+One task queue. Production-ready reliability. No silent failures.
 
-**When NOT to Use Retries:**
-- Validation errors (bad input won't fix itself)
-- Authentication failures (wrong credentials)
-- Resource not found errors (404s)
-- Business logic errors
+---
 
-### 2. Timeout Enforcement
+## Environment Setup
 
-Timeout enforcement prevents runaway tasks from consuming worker resources indefinitely. A buggy infinite loop or a hung network connection could block a worker forever without timeouts.
-
-**Key Concepts:**
-
-- **Soft Time Limit**: Raises `SoftTimeLimitExceeded` exception for graceful cleanup (e.g., `soft_time_limit=8`)
-- **Hard Time Limit**: Forcefully terminates the task process if cleanup takes too long (e.g., `time_limit=10`)
-- **Graceful Shutdown**: Catching the soft limit to close connections, save state, or return partial results
-
-**Timeout Enforcement Flow:**
-
-![alt text](images/archi-diagrams/mod-54_timeout.drawio.svg)
-
-**Implementation Pattern:**
-
-```python
-@celery.task(time_limit=10, soft_time_limit=8)
-def long_running_task(self):
-    try:
-        # Your task logic here
-        heavy_computation()
-    except SoftTimeLimitExceeded:
-        # Graceful cleanup
-        cleanup_resources()
-        return {"status": "timeout", "message": "Task exceeded time limit"}
-```
-
-**When to Set Timeouts:**
-- I/O operations (API calls, file downloads)
-- CPU-intensive computations
-- Any task that could potentially hang
-- Tasks that call external services with unpredictable response times
-
-### 3. Error Handling
-
-Error handling determines what happens when a task fails. Do you retry? Return an error message? Let it crash? Proper error handling makes the difference between a resilient system and one that silently swallows failures.
-
-**Key Concepts:**
-
-- **Try-Except Blocks**: Catch exceptions to control behavior
-- **Structured Error Responses**: Return dictionaries with error details instead of raising exceptions
-- **Error Propagation**: When to let errors bubble up vs. handling them
-- **Retry vs. Return**: Deciding whether to retry or return an error
-
-**Decision Guide:**
-
-| Error Type | Pattern | Reason |
-|------------|---------|--------|
-| Network timeout | Pattern 1 (Retry) | Might succeed on next attempt |
-| Database deadlock | Pattern 1 (Retry) | Usually resolves quickly |
-| Invalid input | Pattern 2 (Return error) | Won't fix itself |
-| Auth failure | Pattern 2 (Return error) | Requires user action |
-| Unexpected exception | Pattern 3 (Raise) | Needs investigation |
-| System error | Pattern 3 (Raise) | Should alert monitoring |
-
-### 4. Logging
-
-Logging provides visibility into task execution. Without logs, debugging failed tasks means guessing. With comprehensive logging, you have a complete audit trail of what happened and when.
-
-**Key Concepts:**
-
-- **Log Levels**: INFO (normal operation), WARNING (potential issues), ERROR (failures)
-- **Structured Logging**: Include context (task ID, user ID, attempt number)
-- **Lifecycle Events**: Log start, success, failure, retry, timeout
-- **Correlation**: Use consistent identifiers to trace a task through its lifecycle
-
-**What to Log:**
-
-1. **Task Start**: Task name, input parameters, task ID
-2. **Progress Milestones**: Key steps completed (useful for long tasks)
-3. **Success**: Completion message, duration, result summary
-4. **Errors**: Exception type, error message, attempt number
-5. **Retries**: Retry decision, countdown, total attempts
-6. **Timeouts**: Time limit exceeded, cleanup actions
-7. **API Calls**: Endpoint accessed, client info, status code
-
-**Logging Best Practices:**
-
-```python
-import logging
-logger = logging.getLogger(__name__)
-
-@celery.task(bind=True, max_retries=3)
-def example_task(self, user_id):
-    try:
-        # Log start with context
-        logger.info(f"example_task: Starting for user {user_id}, task_id={self.request.id}")
-
-        # Log progress
-        logger.info(f"example_task: Fetched user data for {user_id}")
-
-        result = do_work(user_id)
-
-        # Log success
-        logger.info(f"example_task: Completed for user {user_id}, duration=5.2s")
-        return result
-
-    except Exception as exc:
-        # Log error with full context
-        logger.error(
-            f"example_task: Failed for user {user_id}, "
-            f"error={exc}, attempt={self.request.retries + 1}/{self.max_retries}"
-        )
-        raise self.retry(exc=exc)
-```
-
-**Why Logging Matters:**
-
-When a task fails in production at 3am, logs answer:
-- What task failed? (`send_welcome_email`)
-- What input triggered it? (`user@example.com`)
-- When did it fail? (`2026-02-03 03:15:42`)
-- What error occurred? (`Connection timeout`)
-- Did it retry? How many times? (`3 retries, all failed`)
-- What was the final outcome? (`Max retries exhausted`)
-
-Without logs, you're blind. With proper logging, you have a complete story. Now that you understand these four reliability mechanisms, let's implement them in a Flask-Celery application.
-
-## Project Structure
-
-You'll be working with the same project structure from Module 53, with modifications to existing files:
-
-```
-flask-celery-app/
-├── app/
-│   ├── __init__.py          # Flask + Celery initialization
-│   ├── routes.py            # API endpoints (will add new endpoint)
-│   └── tasks.py             # Task definitions (will add retries, timeouts, logging, error handling)
-├── celery_utils.py          # Application Factory pattern
-├── config.py                # Configuration (no changes)
-├── docker-compose.yml       # Redis container
-├── requirements.txt         # Dependencies
-├── run.py                   # Application entry point
-└── .venv/                   # Virtual environment
-```
+You will recreate the Flask-Celery project from Module 53 on a fresh VM, then add reliability features.
 
 Check Python version:
 
@@ -216,7 +52,7 @@ Check Python version:
 python --version
 ```
 
-If it doesn't work, install Python 3.12:
+If Python 3.12 is not available, install it:
 
 ```bash
 sudo apt update
@@ -225,11 +61,7 @@ alias python=python3.12
 source ~/.bashrc
 ```
 
-## Step 1: Set Up the Project (Fresh VM)
-
-Since you're starting on a fresh VM, you need to recreate the project from Module 53. If you already have the code from Module 53, you can skip to Step 2.
-
-Create the project directory and files:
+Create the project directory:
 
 ```bash
 mkdir flask-celery-app
@@ -239,27 +71,33 @@ touch app/__init__.py app/routes.py app/tasks.py
 touch celery_utils.py config.py run.py docker-compose.yml requirements.txt
 ```
 
-Create a virtual environment and install dependencies:
+Create and activate a virtual environment:
 
 ```bash
-# Create and activate virtual environment
 python -m venv .venv
 source .venv/bin/activate
+```
 
-# Create requirements.txt
+Create `requirements.txt`:
+
+```bash
 cat > requirements.txt << 'EOF'
 flask==3.0.0
 celery==5.3.4
 redis==5.0.1
 EOF
+```
 
-# Install dependencies
+Install dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
 
 Create `docker-compose.yml` for Redis:
 
-```yaml
+```bash
+cat > docker-compose.yml << 'EOF'
 version: '3.8'
 
 services:
@@ -274,6 +112,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+EOF
 ```
 
 Start Redis:
@@ -282,6 +121,108 @@ Start Redis:
 docker compose up -d
 docker ps  # Verify Redis is running
 ```
+
+---
+
+## Chapter 1: Understanding Reliability Mechanisms
+
+Before implementing reliability features, you need to understand what each mechanism does and why it matters in production systems.
+
+### 1.1 The Four Reliability Pillars
+
+Production task queues require four critical features:
+
+1. **Retry Logic** — Handles transient failures that might succeed on subsequent attempts
+2. **Timeout Enforcement** — Prevents runaway tasks from consuming resources indefinitely
+3. **Logging** — Provides visibility into task execution for debugging
+4. **Error Handling** — Returns meaningful failure messages instead of cryptic stack traces
+
+Without these features, your task queue is fragile. With them, it becomes resilient.
+
+### 1.2 Think First: When to Retry
+
+Consider these scenarios:
+
+**Scenario A:** A task attempts to send an email via an external API. The API returns a 503 Service Unavailable error.
+
+**Scenario B:** A task attempts to register a user with an email address that already exists in the database. The database returns a unique constraint violation error.
+
+**Question:** Which scenario should trigger a retry? Why?
+
+<details>
+<summary>Click to review answer</summary>
+
+**Scenario A should retry.** The 503 error indicates a temporary condition—the API might recover in seconds or minutes. Retrying gives the service time to recover.
+
+**Scenario B should NOT retry.** The unique constraint violation is a permanent error caused by business logic (duplicate email). Retrying the same operation will produce the same error indefinitely. Instead, return a clear error message to the client.
+
+**Retry decision guide:**
+- **Retry:** Network timeouts, service unavailable (503), rate limits, database deadlocks
+- **Do not retry:** Validation errors, authentication failures, resource not found (404), business logic errors
+
+</details>
+
+### 1.3 Understanding Retry Flow
+
+Celery supports two retry mechanisms:
+
+1. **Automatic configuration:** Set `max_retries` and `default_retry_delay` in the task decorator
+2. **Manual retry:** Call `self.retry(exc=exc, countdown=delay)` to programmatically retry
+
+The retry flow with exponential backoff works like this:
+
+![Retry Flow](images/archi-diagrams/mod-54_retry.drawio.svg)
+
+**Key concept:** Exponential backoff doubles the delay with each retry (5s → 10s → 20s). This prevents overwhelming a failing service with rapid retry attempts.
+
+### 1.4 Understanding Timeout Enforcement
+
+Timeouts prevent runaway tasks from consuming worker resources indefinitely. Celery provides two timeout levels:
+
+![Timeout Flow](images/archi-diagrams/mod-54_timeout.drawio.svg)
+
+**Soft time limit:** Raises `SoftTimeLimitExceeded` exception, allowing graceful cleanup (close connections, save partial results).
+
+**Hard time limit:** Forcefully terminates the worker process if cleanup takes too long.
+
+### 1.5 Think First: Timeout Scenarios
+
+**Scenario:** You set a task with `soft_time_limit=8` and `time_limit=10`. The task runs for 12 seconds without handling `SoftTimeLimitExceeded`.
+
+**Question 1:** What happens at the 8-second mark?
+
+**Question 2:** What happens at the 10-second mark?
+
+**Question 3:** Why set a soft limit at all if the hard limit will kill the task anyway?
+
+<details>
+<summary>Click to review answers</summary>
+
+**Answer 1:** At 8 seconds, Celery raises `SoftTimeLimitExceeded`. If the task has a try-except block catching this exception, it can perform cleanup (close database connections, save partial progress). If the task does not handle the exception, it propagates upward and the task fails.
+
+**Answer 2:** At 10 seconds, Celery forcefully terminates the worker process using SIGKILL. No cleanup occurs. The worker may restart, and the task is marked as failed.
+
+**Answer 3:** Soft limits allow graceful cleanup. Without them, connections remain open, locks stay held, and resources leak. Hard limits are a safety mechanism for when cleanup itself hangs.
+
+**Production pattern:** Always handle `SoftTimeLimitExceeded` to clean up resources before hard termination.
+
+</details>
+
+### 1.6 Checkpoint
+
+Before proceeding, verify you understand:
+
+- [ ] The difference between transient errors (retry) and permanent errors (return error)
+- [ ] How exponential backoff prevents overwhelming failed services
+- [ ] The purpose of soft vs. hard timeout limits
+
+---
+
+## Chapter 2: Building the Base Application
+
+You will recreate the Flask-Celery structure from Module 53, then incrementally add reliability features in subsequent chapters.
+
+### 2.1 Create Configuration
 
 Create `config.py`:
 
@@ -298,6 +239,8 @@ class Config:
     CELERY_TIMEZONE = 'UTC'
     CELERY_ENABLE_UTC = True
 ```
+
+### 2.2 Create Celery Utility
 
 Create `celery_utils.py`:
 
@@ -322,52 +265,15 @@ def make_celery(app):
     return celery
 ```
 
+### 2.3 Create Flask Application with Logging
+
 Create `app/__init__.py`:
 
 ```python
 from flask import Flask
 from celery_utils import make_celery
 from config import Config
-
-def create_app(config_class=Config):
-    app = Flask(__name__)
-    app.config.from_object(config_class)
-
-    from app.routes import bp as routes_bp
-    app.register_blueprint(routes_bp)
-
-    return app
-
-app = create_app()
-celery = make_celery(app)
-
-from app import tasks
-```
-
-Create `run.py`:
-
-```python
-from app import app
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
-```
-
-Now you have the basic structure. We'll add the task definitions and routes in the next steps.
-
-## Step 2: Add Logging Configuration
-
-Before modifying tasks, let's set up Python's logging module so we can track task execution. Logging is crucial for debugging failures in production—without logs, you're flying blind.
-
-We'll configure logging at the application level and use it throughout our tasks to record start times, completion, failures, and retry attempts.
-
-**Modify `app/__init__.py` to add logging configuration:**
-
-```python
-from flask import Flask
-from celery_utils import make_celery
-from config import Config
-import logging  # NEW: Import logging module
+import logging
 
 # NEW: Configure logging
 logging.basicConfig(
@@ -391,19 +297,75 @@ celery = make_celery(app)
 from app import tasks
 ```
 
-**What this does:**
+**What changed:** The `logging.basicConfig()` configuration enables structured logging throughout your application. Every log message includes a timestamp, log level, module name, and message—critical for debugging production failures.
 
-- **level=logging.INFO**: Captures INFO, WARNING, and ERROR level messages
-- **format**: Includes timestamp, log level, module name, and message
-- **datefmt**: Human-readable timestamp format
+### 2.4 Create Run Script
 
-Now when tasks log messages using `logging.info()` or `logging.error()`, they'll appear in the Celery worker terminal with timestamps and context.
+Create `run.py`:
 
-## Step 3: Implement Tasks with Reliability Features
+```python
+from app import app
 
-Now we'll create the task definitions with retries, timeouts, logging, and error handling. We'll implement three original tasks from Module 53 plus two new demonstration tasks.
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)
+```
 
-**Create `app/tasks.py`:**
+### 2.5 Checkpoint
+
+- [ ] Flask application with logging configured
+- [ ] Celery integration via application factory pattern
+- [ ] Redis running for broker and result backend
+
+---
+
+## Chapter 3: Implementing Retry Logic
+
+Retry logic handles transient failures—temporary errors that might succeed if you try again. Network timeouts, database deadlocks, and rate-limited API calls are classic examples.
+
+### 3.1 Think First: Exponential Backoff
+
+Consider a task that retries a failed API call:
+
+**Option A:** Retry immediately three times
+- Attempt 1 fails at 0s
+- Attempt 2 fails at 0.1s
+- Attempt 3 fails at 0.2s
+- Total time: 0.3 seconds
+
+**Option B:** Retry with 5-second delays
+- Attempt 1 fails at 0s
+- Attempt 2 fails at 5s
+- Attempt 3 fails at 10s
+- Total time: 15 seconds
+
+**Option C:** Retry with exponential backoff (5s → 10s → 20s)
+- Attempt 1 fails at 0s
+- Attempt 2 fails at 5s
+- Attempt 3 fails at 15s (5s + 10s delay)
+- Total time: 35 seconds
+
+**Question:** If the API is temporarily overloaded, which option is most likely to succeed? Why?
+
+<details>
+<summary>Click to review answer</summary>
+
+**Option C (exponential backoff) is most likely to succeed.**
+
+Option A overwhelms the failing service with rapid retries—the API is still overloaded 0.3 seconds later.
+
+Option B gives the service time to recover, but applies constant pressure.
+
+Option C gives progressively more time between retries. If the service recovers in 6 seconds, attempt 2 succeeds. If it needs 16 seconds, attempt 3 succeeds. The increasing delays prevent overwhelming the service while maximizing chances of success.
+
+This is why major services (AWS, Google Cloud, Stripe) recommend exponential backoff for retry logic.
+
+</details>
+
+### 3.2 Create Tasks with Retry Configuration
+
+Complete the task definitions below by filling in the blanks:
+
+Create `app/tasks.py`:
 
 ```python
 from app import celery
@@ -415,14 +377,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 @celery.task(
-    bind=True,
+    bind=___,  # Q1: What value allows access to self?
     max_retries=3,
     default_retry_delay=5
 )
 def test_task(self):
     """
     Simple health check task with retry capability.
-    Demonstrates basic retry configuration.
     """
     try:
         logger.info("test_task: Starting execution")
@@ -430,7 +391,7 @@ def test_task(self):
         from flask import current_app
         secret_key = current_app.config.get('SECRET_KEY')
 
-        logger.info(f"test_task: Accessed Flask config successfully")
+        logger.info("test_task: Accessed Flask config successfully")
         time.sleep(3)
 
         logger.info("test_task: Completed successfully")
@@ -438,7 +399,7 @@ def test_task(self):
 
     except Exception as exc:
         logger.error(f"test_task: Failed with error: {exc}")
-        raise self.retry(exc=exc)
+        raise self.___(exc=exc)  # Q2: What method triggers a retry?
 
 
 @celery.task(
@@ -451,30 +412,20 @@ def test_task(self):
 def send_welcome_email(self, user_email):
     """
     Simulates sending a welcome email with timeout protection.
-
-    Demonstrates:
-    - Retry on network errors
-    - Timeout enforcement
-    - Structured error handling
     """
     try:
         logger.info(f"send_welcome_email: Starting for {user_email}")
-
-        # Simulate network I/O
         time.sleep(5)
-
         logger.info(f"send_welcome_email: Successfully sent to {user_email}")
         return f"Email sent to {user_email}"
 
-    except SoftTimeLimitExceeded:
+    except ___:  # Q3: What exception indicates soft timeout?
         logger.warning(f"send_welcome_email: Soft time limit exceeded for {user_email}")
-        # Graceful cleanup before hard termination
         return {"status": "timeout", "message": "Email sending timed out"}
 
     except Exception as exc:
         logger.error(f"send_welcome_email: Failed for {user_email} - {exc}")
-        # Retry on transient errors
-        raise self.retry(exc=exc, countdown=10)
+        raise self.retry(exc=exc)
 
 
 @celery.task(
@@ -487,16 +438,9 @@ def send_welcome_email(self, user_email):
 def generate_monthly_report(self, user_id):
     """
     Simulates PDF generation with comprehensive error handling.
-
-    Demonstrates:
-    - CPU-intensive work with timeout
-    - Structured error responses
-    - Retry logic for recoverable errors
     """
     try:
         logger.info(f"generate_monthly_report: Starting for user {user_id}")
-
-        # Simulate CPU-intensive processing
         time.sleep(10)
 
         report_filename = f"report_user_{user_id}_{int(time.time())}.pdf"
@@ -519,8 +463,171 @@ def generate_monthly_report(self, user_id):
     except Exception as exc:
         logger.error(f"generate_monthly_report: Failed for user {user_id} - {exc}")
         raise self.retry(exc=exc, countdown=15)
+```
+
+**Hints:**
+- `bind=True` gives access to the task instance (`self`)
+- The soft timeout exception is imported at the top of the file
+- `self.retry()` triggers a manual retry
+
+<details>
+<summary>Click to see complete solution</summary>
+
+```python
+from app import celery
+from celery.exceptions import SoftTimeLimitExceeded
+import time
+import random
+import logging
+
+logger = logging.getLogger(__name__)
+
+@celery.task(
+    bind=True,  # A1
+    max_retries=3,
+    default_retry_delay=5
+)
+def test_task(self):
+    """
+    Simple health check task with retry capability.
+    """
+    try:
+        logger.info("test_task: Starting execution")
+
+        from flask import current_app
+        secret_key = current_app.config.get('SECRET_KEY')
+
+        logger.info("test_task: Accessed Flask config successfully")
+        time.sleep(3)
+
+        logger.info("test_task: Completed successfully")
+        return "Pong from Background!"
+
+    except Exception as exc:
+        logger.error(f"test_task: Failed with error: {exc}")
+        raise self.retry(exc=exc)  # A2
 
 
+@celery.task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=10,
+    time_limit=15,
+    soft_time_limit=12
+)
+def send_welcome_email(self, user_email):
+    """
+    Simulates sending a welcome email with timeout protection.
+    """
+    try:
+        logger.info(f"send_welcome_email: Starting for {user_email}")
+        time.sleep(5)
+        logger.info(f"send_welcome_email: Successfully sent to {user_email}")
+        return f"Email sent to {user_email}"
+
+    except SoftTimeLimitExceeded:  # A3
+        logger.warning(f"send_welcome_email: Soft time limit exceeded for {user_email}")
+        return {"status": "timeout", "message": "Email sending timed out"}
+
+    except Exception as exc:
+        logger.error(f"send_welcome_email: Failed for {user_email} - {exc}")
+        raise self.retry(exc=exc)
+
+
+@celery.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=15,
+    time_limit=30,
+    soft_time_limit=25
+)
+def generate_monthly_report(self, user_id):
+    """
+    Simulates PDF generation with comprehensive error handling.
+    """
+    try:
+        logger.info(f"generate_monthly_report: Starting for user {user_id}")
+        time.sleep(10)
+
+        report_filename = f"report_user_{user_id}_{int(time.time())}.pdf"
+        logger.info(f"generate_monthly_report: Generated {report_filename}")
+
+        return {
+            "filename": report_filename,
+            "user_id": user_id,
+            "status": "completed"
+        }
+
+    except SoftTimeLimitExceeded:
+        logger.warning(f"generate_monthly_report: Soft time limit exceeded for user {user_id}")
+        return {
+            "status": "timeout",
+            "message": "Report generation exceeded time limit",
+            "user_id": user_id
+        }
+
+    except Exception as exc:
+        logger.error(f"generate_monthly_report: Failed for user {user_id} - {exc}")
+        raise self.retry(exc=exc, countdown=15)
+```
+
+**Answers:**
+- Q1: `True` — Enables `bind=True`, giving access to `self`
+- Q2: `retry` — The method `self.retry()` triggers a manual retry
+- Q3: `SoftTimeLimitExceeded` — Exception raised when soft timeout is reached
+
+</details>
+
+### 3.3 Understanding the Retry Parameters
+
+Match each parameter to its purpose:
+
+| Parameter | Purpose (A-E) |
+|-----------|---------------|
+| `bind=True` | ___ |
+| `max_retries=3` | ___ |
+| `default_retry_delay=5` | ___ |
+| `self.retry(exc=exc, countdown=10)` | ___ |
+| `time_limit=15` | ___ |
+
+**Options:**
+- A: Maximum number of retry attempts before permanent failure
+- B: Allows access to task instance (`self`) and request metadata
+- C: Hard timeout that forcefully terminates the task
+- D: Default seconds to wait before retrying
+- E: Manually triggers a retry with a specific delay
+
+<details>
+<summary>Click to check your answers</summary>
+
+| Parameter | Purpose |
+|-----------|---------|
+| `bind=True` | B: Allows access to task instance (`self`) and request metadata |
+| `max_retries=3` | A: Maximum number of retry attempts before permanent failure |
+| `default_retry_delay=5` | D: Default seconds to wait before retrying |
+| `self.retry(exc=exc, countdown=10)` | E: Manually triggers a retry with a specific delay |
+| `time_limit=15` | C: Hard timeout that forcefully terminates the task |
+
+</details>
+
+### 3.4 Checkpoint
+
+- [ ] Tasks configured with retry parameters
+- [ ] Logging statements tracking execution lifecycle
+- [ ] Timeout limits preventing runaway tasks
+- [ ] Try-except blocks catching and handling errors
+
+---
+
+## Chapter 4: Creating Demonstration Tasks
+
+To observe retry and timeout behavior in action, you need tasks that intentionally fail and exceed time limits. These demonstration tasks simulate real-world failure scenarios.
+
+### 4.1 Add the Flaky Task
+
+Add this task to `app/tasks.py` to demonstrate retry behavior:
+
+```python
 @celery.task(
     bind=True,
     max_retries=3,
@@ -529,14 +636,9 @@ def generate_monthly_report(self, user_id):
 def flaky_task(self, task_number):
     """
     Intentionally fails 70% of the time to demonstrate retry behavior.
-
-    This task simulates real-world scenarios where external services
-    are unreliable (API rate limits, network issues, database locks).
     """
     try:
         logger.info(f"flaky_task: Attempt started for task #{task_number}")
-
-        # Simulate work
         time.sleep(2)
 
         # 70% chance of failure
@@ -569,8 +671,42 @@ def flaky_task(self, task_number):
         logger.info(f"flaky_task: Retrying task #{task_number} in {countdown} seconds")
 
         raise self.retry(exc=exc, countdown=countdown)
+```
 
+### 4.2 Think First: Exponential Backoff Calculation
 
+Study the exponential backoff formula:
+
+```python
+countdown = self.default_retry_delay * (2 ** self.request.retries)
+```
+
+Given `default_retry_delay=5`:
+
+**Question 1:** What is the countdown for the first retry (`self.request.retries=0`)?
+
+**Question 2:** What is the countdown for the second retry (`self.request.retries=1`)?
+
+**Question 3:** What is the countdown for the third retry (`self.request.retries=2`)?
+
+<details>
+<summary>Click to review answers</summary>
+
+**Answer 1:** `5 * (2 ** 0) = 5 * 1 = 5 seconds`
+
+**Answer 2:** `5 * (2 ** 1) = 5 * 2 = 10 seconds`
+
+**Answer 3:** `5 * (2 ** 2) = 5 * 4 = 20 seconds`
+
+The formula doubles the delay with each retry, creating a 5s → 10s → 20s progression.
+
+</details>
+
+### 4.3 Add the Slow Task
+
+Add this task to `app/tasks.py` to demonstrate timeout enforcement:
+
+```python
 @celery.task(
     bind=True,
     time_limit=10,
@@ -579,9 +715,6 @@ def flaky_task(self, task_number):
 def slow_task(self, duration):
     """
     Intentionally runs longer than timeout to demonstrate termination.
-
-    This demonstrates how Celery enforces time limits to prevent
-    runaway tasks from consuming worker resources indefinitely.
     """
     try:
         logger.info(f"slow_task: Starting {duration}-second task")
@@ -589,14 +722,14 @@ def slow_task(self, duration):
         # This will exceed our 8-second soft limit if duration > 8
         time.sleep(duration)
 
-        logger.info(f"slow_task: Completed successfully")
+        logger.info("slow_task: Completed successfully")
         return {
             "status": "completed",
             "duration": duration
         }
 
     except SoftTimeLimitExceeded:
-        logger.warning(f"slow_task: Soft time limit (8s) exceeded")
+        logger.warning("slow_task: Soft time limit (8s) exceeded")
 
         # Return gracefully before hard termination
         return {
@@ -606,22 +739,22 @@ def slow_task(self, duration):
         }
 ```
 
-**Key reliability features added:**
+### 4.4 Checkpoint
 
-1. **bind=True**: Allows access to `self` (the task instance) for manual retry and request metadata
-2. **max_retries**: Maximum number of retry attempts before permanent failure
-3. **default_retry_delay**: Seconds to wait before retrying (can be overridden with exponential backoff)
-4. **time_limit**: Hard timeout (task is killed after this many seconds)
-5. **soft_time_limit**: Soft timeout (raises SoftTimeLimitExceeded for graceful cleanup)
-6. **Logging**: Every task logs start, success, failure, and retry events
-7. **Error handling**: Try-except blocks capture exceptions and return structured errors
-8. **Exponential backoff**: `flaky_task` doubles the retry delay with each attempt
+- [ ] A flaky task that randomly fails to demonstrate retries
+- [ ] Exponential backoff implementation that increases delays
+- [ ] A slow task that exceeds timeout limits
+- [ ] Structured error responses instead of exceptions
 
-## Step 4: Create API Endpoints
+---
 
-Now let's create the Flask routes that trigger these tasks. We'll include the original three endpoints from Module 53 plus a new endpoint for testing the flaky task, and the status checking endpoint.
+## Chapter 5: Creating API Endpoints
 
-**Create `app/routes.py`:**
+The tasks are defined. Now create Flask endpoints that trigger these tasks and check their status.
+
+### 5.1 Create Routes
+
+Create `app/routes.py`:
 
 ```python
 from flask import Blueprint, jsonify, request
@@ -692,10 +825,7 @@ def generate_report():
 @bp.route('/test-reliability', methods=['POST'])
 def test_reliability():
     """
-    NEW: Endpoint to test retry behavior with flaky task.
-
-    This endpoint triggers a task that fails randomly to demonstrate
-    automatic retries and exponential backoff.
+    Endpoint to test retry behavior with flaky task.
     """
     from app.tasks import flaky_task
 
@@ -716,10 +846,7 @@ def test_reliability():
 @bp.route('/test-timeout', methods=['POST'])
 def test_timeout():
     """
-    NEW: Endpoint to test timeout enforcement.
-
-    Triggers a task that runs longer than its timeout limit to demonstrate
-    Celery's timeout enforcement mechanism.
+    Endpoint to test timeout enforcement.
     """
     from app.tasks import slow_task
 
@@ -741,12 +868,7 @@ def test_timeout():
 def get_task_status(task_id):
     """
     Check task status and retrieve results.
-
-    Returns task state (PENDING, SUCCESS, FAILURE, RETRY) and
-    result or error message if available.
     """
-    # Import celery here to avoid circular import
-    # (app/__init__.py imports routes.py before celery is defined)
     from app import celery
 
     task_result = AsyncResult(task_id, app=celery)
@@ -775,19 +897,46 @@ def get_task_status(task_id):
     return jsonify(response), 200
 ```
 
-**What's new:**
+### 5.2 Understanding the Status Endpoint
 
-- **POST /test-reliability**: Triggers the flaky task to observe retry behavior
-- **POST /test-timeout**: Triggers the slow task to observe timeout enforcement
-- **Logging**: All endpoints log their actions for observability
-- **GET /tasks/<task_id>**: Returns RETRY state when tasks are retrying
-- **Circular import fix**: `from app import celery` is imported inside `get_task_status()` function instead of at the module level to avoid circular import errors
+The `/tasks/<task_id>` endpoint handles multiple task states:
 
-## Step 5: Start the System
+| State | Meaning | When it Occurs |
+|-------|---------|----------------|
+| PENDING | ___ | ___ |
+| SUCCESS | ___ | ___ |
+| FAILURE | ___ | ___ |
+| RETRY | ___ | ___ |
 
-Now let's start all the components. You'll need three terminals.
+<details>
+<summary>Click to see completed table</summary>
 
-**Terminal 1: Celery Worker**
+| State | Meaning | When it Occurs |
+|-------|---------|----------------|
+| PENDING | Task queued but not started, or task ID does not exist | Task submitted via `.delay()` but worker hasn't picked it up yet |
+| SUCCESS | Task completed successfully | Task returned a value without raising an exception |
+| FAILURE | Task failed permanently | Task raised an exception and exhausted retries |
+| RETRY | Task failed and is scheduled for retry | Task raised an exception and `self.retry()` was called |
+
+</details>
+
+### 5.3 Checkpoint
+
+- [ ] Five endpoints that trigger different tasks
+- [ ] A status endpoint that reports task state
+- [ ] Logging throughout the request-response cycle
+
+---
+
+## Chapter 6: Testing Retry Behavior
+
+Now start the system and observe retry behavior with the flaky task.
+
+### 6.1 Start the System
+
+Open three terminals.
+
+**Terminal 1 — Celery Worker:**
 
 ```bash
 cd flask-celery-app
@@ -795,14 +944,14 @@ source .venv/bin/activate
 celery -A app.celery worker --loglevel=info
 ```
 
-You should see the worker start and register all five tasks:
+You should see the worker register all five tasks:
 - `app.tasks.test_task`
 - `app.tasks.send_welcome_email`
 - `app.tasks.generate_monthly_report`
 - `app.tasks.flaky_task`
 - `app.tasks.slow_task`
 
-**Terminal 2: Flask Application**
+**Terminal 2 — Flask Application:**
 
 ```bash
 cd flask-celery-app
@@ -810,23 +959,22 @@ source .venv/bin/activate
 python run.py
 ```
 
-The Flask server should start on port 5000.
+The Flask server starts on port 5000.
 
-**Terminal 3: Testing**
+**Terminal 3 — Testing:**
 
-This terminal will be used for curl commands.
+This terminal remains available for curl commands.
 
-## Step 6: Test Basic Tasks with Logging
+### 6.2 Test Basic Tasks
 
-First, let's verify the basic tasks work and observe the logging output.
-
-**Test the health check:**
+Verify the health check works:
 
 ```bash
 curl -X POST http://localhost:5000/ping
 ```
 
-**Response:**
+**Expected output:**
+
 ```json
 {
   "message": "Task queued",
@@ -834,17 +982,39 @@ curl -X POST http://localhost:5000/ping
 }
 ```
 
-**Check Terminal 1 (Worker)** - you should see logs:
+Check Terminal 1 (Worker) for logs:
 
-![alt text](./images/image.png)
+![Worker Logs](./images/image.png)
 
-The timestamps and structured logging make it easy to track execution.
+### 6.3 Predict: Retry Behavior
 
-## Step 7: Test Retry Behavior with Flaky Task
+Before triggering the flaky task, predict what will happen:
 
-Now let's trigger the flaky task to observe automatic retries with exponential backoff.
+**Given:**
+- The task has a 70% failure rate
+- `max_retries=3`
+- Exponential backoff: 5s → 10s → 20s
 
-**Trigger a flaky task:**
+**Question 1:** If the task fails on all attempts, how many total execution attempts occur (initial + retries)?
+
+**Question 2:** What is the minimum time before the task finally fails (assuming all attempts fail immediately)?
+
+**Question 3:** What state will the status endpoint return while the task is retrying?
+
+<details>
+<summary>Click to review answers</summary>
+
+**Answer 1:** 4 attempts total (1 initial + 3 retries)
+
+**Answer 2:** Minimum time = 5s (first retry) + 10s (second retry) + 20s (third retry) = 35 seconds (not counting execution time)
+
+**Answer 3:** The status endpoint returns `"state": "RETRY"` while the task is scheduled for retry. Between retry attempts, it shows PENDING.
+
+</details>
+
+### 6.4 Trigger the Flaky Task
+
+Trigger a flaky task:
 
 ```bash
 curl -X POST http://localhost:5000/test-reliability \
@@ -852,7 +1022,8 @@ curl -X POST http://localhost:5000/test-reliability \
   -d '{"task_number": 1}'
 ```
 
-**Response:**
+**Expected response:**
+
 ```json
 {
   "message": "Flaky task queued (70% chance of failure)",
@@ -862,26 +1033,27 @@ curl -X POST http://localhost:5000/test-reliability \
 }
 ```
 
-**Watch Terminal 1 (Worker) carefully.** Since the task has a 70% failure rate, you'll likely see retry attempts:
+Watch Terminal 1 (Worker) carefully. You will likely see retry attempts:
 
-**Example output (if task fails and retries):**
+![Retry Logs](./images/image-1.png)
 
-![alt text](./images/image-1.png)
+**Notice:** The logs show each attempt, the error, and the countdown for the next retry.
 
-**Notice the exponential backoff**: First retry after 5 seconds, second retry after 10 seconds, third would be after 20 seconds.
+### 6.5 Check Task Status During Retry
 
-**Check the task status while it's retrying:**
+Copy the `task_id` from the response and check its status:
 
 ```bash
-# Copy the task_id from the response above
 curl http://localhost:5000/tasks/xyz-789-abc-123
 ```
 
-You might catch it in RETRY state:
+If you query during a retry, you might see:
 
-![alt text](./images/image-2.png)
+![Retry Status](./images/image-2.png)
 
-After the task eventually succeeds (or exhausts retries), check status again:
+### 6.6 Check Final Status
+
+After the task completes (either succeeds or exhausts retries), check status again:
 
 ```bash
 curl http://localhost:5000/tasks/xyz-789-abc-123
@@ -889,9 +1061,10 @@ curl http://localhost:5000/tasks/xyz-789-abc-123
 
 **If successful:**
 
-![alt text](./images/image-3.png)
+![Success Status](./images/image-3.png)
 
 **If all retries failed:**
+
 ```json
 {
   "task_id": "xyz-789-abc-123",
@@ -907,13 +1080,50 @@ curl http://localhost:5000/tasks/xyz-789-abc-123
 }
 ```
 
-Notice that even when the task logic "fails," Celery marks it as SUCCESS because the task function returned a value (the error dict) rather than raising an exception. This is intentional—we handle the error gracefully and return structured data.
+**Important:** The Celery state is SUCCESS because the task returned a value (the error dictionary) rather than raising an unhandled exception. This demonstrates intentional error handling—the task gracefully reports its failure instead of crashing.
 
-## Step 8: Test Timeout Enforcement
+### 6.7 Checkpoint
 
-Now let's trigger a task that exceeds its timeout to see Celery's enforcement in action.
+- [ ] Observed automatic retry behavior
+- [ ] Seen exponential backoff delays in worker logs
+- [ ] Checked task status during and after retries
+- [ ] Verified that structured error responses return SUCCESS state
 
-**Trigger a slow task that will timeout:**
+---
+
+## Chapter 7: Testing Timeout Enforcement
+
+Now observe how Celery enforces timeout limits to prevent runaway tasks.
+
+### 7.1 Predict: Timeout Behavior
+
+Consider the slow task configuration:
+- `soft_time_limit=8`
+- `time_limit=10`
+- You will trigger it with `duration=15`
+
+**Question 1:** What will happen at the 8-second mark?
+
+**Question 2:** Will the task continue running after the soft timeout?
+
+**Question 3:** What state will the task ultimately reach?
+
+<details>
+<summary>Click to review answers</summary>
+
+**Answer 1:** At 8 seconds, Celery raises `SoftTimeLimitExceeded`. The task's except block catches it and returns a timeout response.
+
+**Answer 2:** No. The except block executes immediately, returns the timeout response, and the task ends gracefully.
+
+**Answer 3:** The task reaches SUCCESS state because it handled the timeout gracefully and returned a structured response.
+
+If the task did NOT handle `SoftTimeLimitExceeded`, it would continue running until the 10-second hard limit, when Celery would forcefully terminate it with FAILURE state.
+
+</details>
+
+### 7.2 Trigger a Slow Task
+
+Trigger a task that exceeds the timeout:
 
 ```bash
 curl -X POST http://localhost:5000/test-timeout \
@@ -921,7 +1131,8 @@ curl -X POST http://localhost:5000/test-timeout \
   -d '{"duration": 15}'
 ```
 
-**Response:**
+**Expected response:**
+
 ```json
 {
   "message": "Slow task queued (will run for 15 seconds)",
@@ -931,25 +1142,27 @@ curl -X POST http://localhost:5000/test-timeout \
 }
 ```
 
-**Watch Terminal 1 (Worker).** The task will start, then after 8 seconds hit the soft limit:
+Watch Terminal 1 (Worker). After 8 seconds, you will see:
 
-![alt text](./images/image-4.png)
+![Timeout Logs](./images/image-4.png)
 
-The task catches `SoftTimeLimitExceeded` and returns gracefully. If it didn't handle the exception, Celery would kill it at the 10-second hard limit.
+### 7.3 Check Task Status
 
-**Check the task status:**
+Check the task status:
 
 ```bash
 curl http://localhost:5000/tasks/timeout-task-123
 ```
 
-**Response:**
+**Expected output:**
 
-![alt text](./images/image-5.png)
+![Timeout Status](./images/image-5.png)
 
-The task "succeeded" in the sense that it handled the timeout gracefully and returned a structured response indicating what happened.
+The task "succeeded" in the sense that it handled the timeout gracefully and returned a structured response.
 
-**What if we trigger a task within the limit?**
+### 7.4 Test Within Time Limit
+
+Now trigger a task that completes within the timeout:
 
 ```bash
 curl -X POST http://localhost:5000/test-timeout \
@@ -957,21 +1170,53 @@ curl -X POST http://localhost:5000/test-timeout \
   -d '{"duration": 5}'
 ```
 
-**Worker output:**
+Watch Terminal 1 (Worker):
 
-![alt text](./images/image-6.png)
+![Success Logs](./images/image-6.png)
 
-**Status:**
+Check status:
 
-![alt text](./images/image-7.png)
+![Success Status](./images/image-7.png)
 
-This demonstrates that the timeout only enforces when exceeded.
+This demonstrates that timeouts only enforce when exceeded.
 
-## Step 9: Test Multiple Concurrent Flaky Tasks
+### 7.5 Experiment: Unhandled Timeout
 
-Let's submit multiple flaky tasks simultaneously to observe concurrent retry behavior.
+To understand why handling `SoftTimeLimitExceeded` matters, create a version of the slow task that does NOT catch the exception.
 
-**Submit 5 flaky tasks rapidly:**
+**Question:** If the task does not handle `SoftTimeLimitExceeded`, what will happen?
+
+<details>
+<summary>Click to review answer</summary>
+
+If the task does not catch `SoftTimeLimitExceeded`:
+
+1. At the 8-second soft limit, the exception is raised
+2. The exception propagates upward (no except block to catch it)
+3. The task continues running until the 10-second hard limit
+4. Celery forcefully terminates the worker process (SIGKILL)
+5. The task is marked as FAILURE
+6. No cleanup occurs (connections stay open, locks stay held)
+
+**This is why you should always handle SoftTimeLimitExceeded.** It allows graceful cleanup before hard termination.
+
+</details>
+
+### 7.6 Checkpoint
+
+- [ ] Observed soft timeout limits raising `SoftTimeLimitExceeded`
+- [ ] Seen tasks handle timeouts gracefully and return structured responses
+- [ ] Verified that tasks within time limits complete normally
+
+---
+
+## Chapter 8: Testing Concurrent Retry Behavior
+
+In production, multiple tasks may be failing and retrying simultaneously. This chapter demonstrates how Celery manages concurrent retry schedules.
+
+### 8.1 Trigger Multiple Flaky Tasks
+
+Submit five flaky tasks rapidly:
 
 ```bash
 for i in {1..5}; do
@@ -982,9 +1227,10 @@ done
 wait
 ```
 
-**Watch Terminal 1 (Worker).** You'll see multiple tasks executing concurrently (depending on your worker concurrency), with some failing and retrying at different intervals.
+**Expected behavior:** Watch Terminal 1 (Worker). You will see multiple tasks executing concurrently (depending on worker concurrency settings), with some failing and retrying at different intervals.
 
 **Example interleaved output:**
+
 ```
 [10:50:10] INFO in tasks: flaky_task: Attempt started for task #1
 [10:50:10] INFO in tasks: flaky_task: Attempt started for task #2
@@ -1000,24 +1246,36 @@ wait
 
 This demonstrates how the retry system handles multiple tasks independently, each with its own retry schedule.
 
-## Step 10: Understanding Error Handling Patterns
+### 8.2 Checkpoint
 
-The tasks demonstrate two error handling patterns:
+- [ ] Observed concurrent task execution and retries
+- [ ] Seen independent retry schedules for different tasks
+- [ ] Verified that retries do not block other tasks
 
-**Pattern 1: Retry on transient errors**
+---
+
+## Chapter 9: Understanding Error Handling Patterns
+
+The tasks demonstrate two error handling patterns. Understanding when to use each pattern is essential for production systems.
+
+### 9.1 Pattern 1: Retry and Raise
 
 Used in `send_welcome_email` and `generate_monthly_report`:
+
 ```python
 except Exception as exc:
     logger.error(f"Task failed: {exc}")
     raise self.retry(exc=exc, countdown=10)
 ```
 
-This is appropriate for errors that might be temporary (network timeout, database deadlock). The task automatically retries.
+**When the task exhausts retries:** Celery marks it as FAILURE. The exception information is stored in the result backend.
 
-**Pattern 2: Return structured error after max retries**
+**When to use:** Critical tasks where permanent failure should be visible and trigger alerts.
+
+### 9.2 Pattern 2: Retry Then Return Error Dict
 
 Used in `flaky_task`:
+
 ```python
 except Exception as exc:
     if self.request.retries >= self.max_retries:
@@ -1029,48 +1287,108 @@ except Exception as exc:
     raise self.retry(exc=exc, countdown=...)
 ```
 
-This pattern retries on transient errors but returns a structured error response after exhausting retries, rather than leaving the task in FAILURE state.
+**When the task exhausts retries:** The task returns a structured dictionary with error details. Celery marks it as SUCCESS (because it returned a value, not an exception).
 
-**Which pattern to use?**
+**When to use:** Tasks where you want to track attempts but still return structured data to the client. The client can parse the response and determine that `status=failed` indicates a problem.
 
-- **Retry and raise**: Use for critical tasks where permanent failure should be visible (state = FAILURE)
-- **Retry and return error dict**: Use when you want to track attempts but still return structured data to the client
+### 9.3 Think First: Which Pattern to Use?
 
-## Step 11: Observe Logging in Production Scenarios
+Consider these scenarios:
 
-The logging we added provides visibility into task execution. Let's examine what information is captured:
+**Scenario A:** A critical billing task that charges a customer's credit card. If it fails after retries, the operations team must be alerted immediately.
 
-**For successful tasks:**
-- Start time
-- Key execution milestones
-- Completion time
-- Result summary
+**Scenario B:** A notification task that sends a push notification to a mobile device. If it fails after retries, you want to log the failure but not trigger an alert (the user can be notified through other channels).
 
-**For failed tasks:**
-- Start time
-- Error details
-- Retry attempts and countdown
-- Final status (success after retries or permanent failure)
+**Question:** Which error handling pattern should each scenario use?
 
-**For timeout tasks:**
-- Start time
-- Timeout trigger (soft or hard)
-- Graceful cleanup actions
+<details>
+<summary>Click to review answer</summary>
 
-This logging is crucial for production debugging. When a task fails at 3am, you need to know:
-1. When did it start?
-2. What error occurred?
-3. Did it retry? How many times?
-4. What was the final outcome?
+**Scenario A should use Pattern 1 (Retry and Raise).** Billing failures are critical. The FAILURE state triggers alerts in monitoring systems (PagerDuty, CloudWatch, etc.). The operations team investigates immediately.
 
-All of this is now visible in your worker logs.
+**Scenario B should use Pattern 2 (Retry Then Return Error Dict).** Notification failures are not critical. You want to log the failure for analytics, but you don't want to wake up an engineer at 3am because a push notification failed. The structured response allows tracking failure rates without triggering alerts.
 
-## Conclusion
+**General guidance:**
+- Critical path (billing, data integrity): Pattern 1
+- Best-effort (notifications, analytics): Pattern 2
 
-In this lab, you transformed your basic Flask-Celery integration into a production-ready task queue system by adding four critical reliability features.
+</details>
 
-You implemented automatic retry logic with exponential backoff, which handles transient errors like network timeouts or database deadlocks without manual intervention. You configured timeout limits to prevent runaway tasks from consuming worker resources indefinitely. You added comprehensive logging that tracks every task lifecycle event, making debugging production failures straightforward. And you implemented structured error handling that returns meaningful failure messages to API clients instead of cryptic stack traces.
+### 9.4 Checkpoint
 
-You created two demonstration tasks: a flaky task that randomly fails to show retry behavior, and a slow task that exceeds timeouts to show enforcement. You observed how Celery manages concurrent retry schedules, how exponential backoff spaces out retry attempts, and how tasks can gracefully handle timeouts before hard termination.
+At this point, you understand:
+- [ ] The difference between raising exceptions and returning error dictionaries
+- [ ] When to use each error handling pattern
+- [ ] How task states (FAILURE vs SUCCESS) differ based on the pattern
 
-The key takeaway is that production task queues need more than just "fire and forget." They need resilience against failures, protection against runaway processes, visibility into execution, and clear communication of errors. With these features in place, your system can handle the messiness of production environments where external services fail, networks drop, and unexpected errors occur.
+---
+
+## Epilogue: The Complete System
+
+You step back to assess what you have built. A task queue that was once fragile now handles the messiness of production environments.
+
+**Without reliability features:**
+- Transient failures become permanent
+- Runaway tasks consume resources indefinitely
+- Failures disappear silently into logs
+- Debugging requires guesswork
+
+**With reliability features:**
+- Transient failures retry automatically with exponential backoff
+- Timeouts kill runaway tasks before resource exhaustion
+- Comprehensive logging tracks every lifecycle event
+- Structured errors return meaningful messages to clients
+
+Your endpoints now handle:
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/ping` | POST | Health check with background task |
+| `/register` | POST | User registration with email task |
+| `/reports/generate` | POST | PDF generation with timeout protection |
+| `/test-reliability` | POST | Demonstrates retry behavior |
+| `/test-timeout` | POST | Demonstrates timeout enforcement |
+| `/tasks/<task_id>` | GET | Check task status and results |
+
+The operations team reports fewer alerts. Transient failures resolve themselves. When tasks do fail permanently, logs provide complete context for debugging.
+
+---
+
+## The Principles
+
+Building a reliable task queue follows deliberate patterns:
+
+1. **Distinguish transient from permanent errors.** Network timeouts retry. Validation errors return immediately.
+
+2. **Use exponential backoff for retries.** Constant retries overwhelm failing services. Exponential backoff gives time to recover.
+
+3. **Set timeout limits on all long-running tasks.** Infinite loops and hung connections must be terminated before resource exhaustion.
+
+4. **Handle soft timeouts gracefully.** Close connections, save partial results, return structured responses before hard termination.
+
+5. **Log lifecycle events comprehensively.** Start, success, failure, retry, and timeout events enable production debugging.
+
+6. **Return structured errors, not exceptions.** Clients need parseable responses, not stack traces.
+
+7. **Choose error handling patterns based on criticality.** Critical tasks raise exceptions. Best-effort tasks return error dictionaries.
+
+## Next Steps
+
+To continue building production-ready task queues, consider:
+
+1. **Priority Queues** — Route critical tasks to high-priority queues
+2. **Task Routing** — Send different task types to specialized workers
+3. **Monitoring Integration** — Send task metrics to Prometheus or DataDog
+4. **Dead Letter Queues** — Store permanently failed tasks for manual review
+5. **Rate Limiting** — Prevent overwhelming external APIs with too many concurrent tasks
+6. **Task Chains** — Create workflows where tasks trigger subsequent tasks
+7. **Periodic Tasks** — Schedule recurring tasks with Celery Beat
+
+---
+
+## Additional Resources
+
+- [Celery Documentation](https://docs.celeryq.dev/)
+- [Celery Best Practices](https://docs.celeryq.dev/en/stable/userguide/tasks.html#best-practices)
+- [Flask Documentation](https://flask.palletsprojects.com/)
+- [Redis Documentation](https://redis.io/docs/)
