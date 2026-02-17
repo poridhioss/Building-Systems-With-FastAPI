@@ -1,94 +1,12 @@
 # Lab 1: Local Tracing Setup with Grafana Tempo
 
-In Module 55, you added real-time monitoring to your Celery workers using Flower. You can now see which tasks are running, which ones failed, and what the exception tracebacks look like. This is incredibly valuable for debugging individual task failures.
+## Introduction
 
-But Flower has a fundamental limitation: **it only shows you the Celery layer**. It can't answer questions like:
-
-- "How long did the entire user request take from the initial API call to task completion?"
-- "When a task fails, how much time was spent before the failure occurred?"
-- "Is the slowness caused by database queries, Redis operations, or external API calls?"
-- "How does a single user request flow through multiple services (Flask → Redis → Celery)?"
-
-These questions require a different approach called **distributed tracing**. Instead of looking at isolated components (Flask logs, Celery logs, Flower dashboard), distributed tracing gives you a unified timeline that shows the complete journey of a request across all services.
-
-## What is Distributed Tracing?
-
-Distributed tracing is a technique for instrumenting your application to capture detailed timing information about every operation. Here's how it works:
-
-**Traditional Logging:**
-```
-[Flask Log]  10:30:15 - Received POST /register
-[Flask Log]  10:30:15 - Queued task abc-123
-[Celery Log] 10:30:16 - Task abc-123 started
-[Celery Log] 10:30:21 - Task abc-123 succeeded
-```
-
-You see four separate log entries, but you have to manually correlate them. You know the task took 5 seconds, but you don't know:
-- How long did Flask take before queuing the task?
-- How long did the task wait in the queue?
-- What operations happened inside the task?
-
-**Distributed Tracing:**
-```
-Trace ID: abc-123
-├─ Span: POST /register [Flask API] ────────── 50ms
-│  ├─ Span: Validate email ───── 5ms
-│  ├─ Span: Queue task to Redis ─ 10ms
-│  └─ Span: Return response ───── 5ms
-└─ Span: send_welcome_email [Celery Worker] ─── 5000ms
-   ├─ Span: Connect to SMTP ───── 1000ms
-   ├─ Span: Send email ────────── 3000ms
-   └─ Span: Update database ───── 1000ms
-```
-
-Now you can see:
-- The entire request took 5050ms
-- Flask responded in 50ms (good!)
-- The task waited <1ms in the queue (no backlog)
-- Most time (3000ms) was spent sending the email
-- SMTP connection took 1000ms (potential optimization target)
-
-This visibility is exactly what we're building in this lab.
-
-## Key Concepts
-
-Before we start, let's understand the terminology:
-
-### 1. Trace
-A **trace** represents the complete journey of a single request through your system. It has a unique **Trace ID** that ties all related operations together.
-
-Think of it as the "story" of a single user request from start to finish.
-
-### 2. Span
-A **span** represents a single operation within a trace. Each span has:
-- A name (e.g., "POST /register", "send_email", "query_database")
-- A start time and duration
-- A parent span (except for the root span)
-- Attributes (key-value metadata like `user_id`, `email`, `http.method`)
-
-Spans are nested to show parent-child relationships:
-```
-Root Span: HTTP Request
-├─ Child Span: Validate input
-├─ Child Span: Database query
-└─ Child Span: Queue background task
-```
-
-### 3. OpenTelemetry
-**OpenTelemetry (OTel)** is the industry-standard framework for instrumenting applications to generate traces, metrics, and logs. It provides:
-- SDKs for multiple languages (Python, Go, Java, Node.js, etc.)
-- Auto-instrumentation for popular frameworks (Flask, Django, FastAPI, requests, psycopg2)
-- Exporters to send data to various backends (Tempo, Jaeger, Zipkin, Datadog, etc.)
-
-### 4. Grafana Tempo
-**Tempo** is a distributed tracing backend that stores traces efficiently. It's designed for high-volume environments and integrates seamlessly with Grafana for visualization.
-
-### 5. OTLP (OpenTelemetry Protocol)
-**OTLP** is the protocol used to send traces from your application to the tracing backend. It supports both gRPC and HTTP transports.
+This lab teaches you to implement distributed tracing for a Flask-Celery application using OpenTelemetry and Grafana Tempo. Building on Module 55's task-level monitoring with Flower, you will deploy an observability stack, instrument your application to generate trace spans, and visualize end-to-end request flows in Grafana. By the end of this lab, you will have full-stack visibility that shows the complete journey of a request from the Flask API through Redis to the Celery worker, with timing breakdowns for every operation.
 
 ## Architecture Diagram
 
-Here's what we're building:
+The tracing system adds two new components—Grafana Tempo and Grafana—alongside the existing Flask-Celery-Redis infrastructure:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -163,64 +81,185 @@ Here's what we're building:
 
 **Key Flow:**
 
-1. **Client** sends HTTP request to Flask
+1. **Client** sends an HTTP request to Flask
 2. **Flask** creates a root span with a new Trace ID, processes the request, queues a task, and sends spans to Tempo
-3. **Celery Worker** picks up the task, creates a child span with the same Trace ID, executes the task, and sends spans to Tempo
+3. **Celery Worker** picks up the task, creates a child span with the same Trace ID, executes it, and sends spans to Tempo
 4. **Tempo** stores all spans and links them by Trace ID
 5. **Grafana** queries Tempo and visualizes the complete trace timeline
 
-## Objectives
+## Learning Objectives
 
-By the end of this lab, you will:
+By the end of this lab, you will be able to:
 
-1. Deploy Grafana and Tempo locally using Docker Compose
-2. Install OpenTelemetry SDK and auto-instrumentation packages for Flask and Celery
-3. Use auto-instrumentation to capture HTTP requests, Redis operations, and task execution
-4. Configure the OTLP HTTP exporter to send traces to Tempo
-5. Trigger Flask API requests and visualize complete traces in Grafana
-6. Understand span hierarchy, duration breakdowns, and timing analysis
-7. Add custom spans to instrument specific business logic
-8. Enrich spans with custom attributes for better filtering and debugging
-9. Observe trace propagation from Flask to Celery across process boundaries
-10. Identify performance bottlenecks using the trace timeline
+1. Deploy Grafana and Tempo locally using Docker Compose as a trace collection backend
+2. Install and configure OpenTelemetry SDK with OTLP HTTP exporter for Python applications
+3. Auto-instrument Flask, Redis, and Celery to capture traces without modifying business logic
+4. Generate and visualize distributed traces in Grafana showing cross-service request flows
+5. Add custom spans to instrument specific business logic operations
+6. Enrich spans with custom attributes for targeted filtering and debugging
+7. Trace request propagation from Flask to Celery across process boundaries
+8. Search and filter traces using TraceQL to isolate specific requests or errors
+9. Identify performance bottlenecks by analyzing span durations in the trace timeline
 
-## Prerequisites
+**Prerequisites:** Completion of Module 54 Lab 1 with a working Flask-Celery application including retry logic, timeout enforcement, and error handling. Redis must be configured as both broker and result backend. Tasks `send_welcome_email`, `generate_monthly_report`, `flaky_task`, and `slow_task` must be defined.
 
-This lab builds on Module 54. You should have:
-- A working Flask-Celery application with reliability features
-- Redis running via Docker Compose
-- Basic understanding of HTTP, task queues, and asynchronous processing
+## Prologue: The Challenge
 
-## Project Structure
+You join the platform engineering team responsible for a Flask-Celery application that processes thousands of background tasks daily: welcome emails, report generation, data processing, and notification delivery. Module 54 gave the system retry logic, timeout enforcement, and error handling. Module 55 added Flower for real-time task monitoring. The team can now see which tasks are running, which failed, and what the exception tracebacks look like.
 
-We'll extend the Module 54 project with OpenTelemetry instrumentation:
+On Monday morning, the support team reports that user registration feels slow. The Flower dashboard shows tasks completing successfully, but users complain that the entire registration flow takes too long. Nobody can determine whether the delay originates in the Flask API, the Redis broker, or the Celery worker. Flower shows that `send_welcome_email` takes 5 seconds, but the total user-facing latency is 8 seconds. Where are the other 3 seconds?
 
-```
-flask-celery-app/
-├── app/
-│   ├── __init__.py
-│   ├── routes.py
-│   └── tasks.py           # Will add custom spans
-├── celery_utils.py
-├── config.py
-├── docker-compose.yml      # Will add Grafana + Tempo services
-├── requirements.txt        # Will add OpenTelemetry packages
-├── run.py
-├── otel_config.py          # New: OpenTelemetry configuration
-└── .venv/
+On Tuesday, a production incident occurs. An external SMTP service degrades, causing email tasks to slow from 3 seconds to 30 seconds. Flower shows tasks are succeeding, but the latency spike cascades into queue backlogs. Without visibility into what happens inside each task—which step takes how long—the team cannot determine the root cause.
+
+On Wednesday, the architecture grows to include multiple services. A new microservice processes webhook callbacks, and tasks now flow across three different processes. Correlating log entries across services requires matching timestamps manually, a process that takes 20 minutes during an incident. By then, hundreds of customers are affected.
+
+Your task is to implement distributed tracing that answers these questions instantly: How long does the complete request flow take? Where is the time spent? How do requests propagate across services? Which operation is the bottleneck? You will deploy Grafana Tempo, instrument the application with OpenTelemetry, and visualize end-to-end traces that provide this visibility.
+
+## Environment Setup
+
+This lab extends the Module 55 project on a fresh virtual machine. You will set up the Flask-Celery infrastructure and then add OpenTelemetry instrumentation with Grafana Tempo.
+
+Check Python version:
+
+```bash
+python --version
 ```
 
-## Step 1: Deploy Grafana and Tempo
+If Python 3.12 is not available, install it:
 
-First, let's set up the observability stack. We'll add Grafana and Tempo to your existing Docker Compose file.
+```bash
+sudo apt update
+sudo apt install python3.12-venv -y
+alias python=python3.12
+source ~/.bashrc
+```
 
-Navigate to your project directory:
+Clone the project codebase:
+
+```bash
+git clone https://github.com/poridhioss/Building-Systems-With-FastAPI.git
+cd Building-Systems-With-FastAPI/
+git checkout -b mod-54/lab-1 origin/mod-54/lab-1
+```
+
+Create and activate a virtual environment:
 
 ```bash
 cd flask-celery-app
+python -m venv .venv
+source .venv/bin/activate
 ```
 
-Update your `docker-compose.yml` to include Grafana and Tempo:
+Install the base dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Verify Redis is running via Docker Compose and confirm the Flask application and Celery worker are functional before proceeding. This lab assumes the Module 55 infrastructure is operational.
+
+---
+
+## Chapter 1: Understanding Distributed Tracing
+
+Flower provides visibility into Celery's internal operations—task states, worker health, queue lengths. However, it cannot show the complete journey of a user request across multiple services. Distributed tracing fills this gap by capturing detailed timing information for every operation in the request lifecycle.
+
+### 1.1 The Visibility Gap
+
+Consider the following scenario. A user calls `POST /register`, which queues a `send_welcome_email` task. Traditional logging produces four separate entries:
+
+```
+[Flask Log]  10:30:15 - Received POST /register
+[Flask Log]  10:30:15 - Queued task abc-123
+[Celery Log] 10:30:16 - Task abc-123 started
+[Celery Log] 10:30:21 - Task abc-123 succeeded
+```
+
+These log entries are disconnected. To determine total request duration, you must manually correlate timestamps across log files. This manual correlation does not reveal:
+
+- How long Flask spent processing before queuing the task
+- How long the task waited in the Redis queue
+- What operations happened inside the task and how long each took
+
+Distributed tracing solves this by producing a unified timeline:
+
+```
+Trace ID: abc-123
+├─ Span: POST /register [Flask API] ────────── 50ms
+│  ├─ Span: Validate email ───── 5ms
+│  ├─ Span: Queue task to Redis ─ 10ms
+│  └─ Span: Return response ───── 5ms
+└─ Span: send_welcome_email [Celery Worker] ─── 5000ms
+   ├─ Span: Connect to SMTP ───── 1000ms
+   ├─ Span: Send email ────────── 3000ms
+   └─ Span: Update database ───── 1000ms
+```
+
+This timeline shows that the entire request took 5050ms, Flask responded in 50ms, the task waited less than 1ms in the queue (no backlog), and 3000ms of task execution was spent sending the email—a potential optimization target.
+
+### 1.2 Core Terminology
+
+Four concepts form the foundation of distributed tracing:
+
+**Trace** — A trace represents the complete journey of a single request through the system. It has a unique Trace ID that ties all related operations together. One user request produces one trace.
+
+**Span** — A span represents a single operation within a trace. Each span has a name (e.g., "POST /register", "send_email"), a start time, a duration, a parent span (except for the root span), and attributes (key-value metadata like `user_id` or `http.method`). Spans nest to show parent-child relationships:
+
+```
+Root Span: HTTP Request
+├─ Child Span: Validate input
+├─ Child Span: Database query
+└─ Child Span: Queue background task
+```
+
+**OpenTelemetry (OTel)** — The industry-standard framework for instrumenting applications to generate traces, metrics, and logs. It provides SDKs for multiple languages (Python, Go, Java, Node.js), auto-instrumentation for popular frameworks (Flask, Django, FastAPI), and exporters to send data to various backends (Tempo, Jaeger, Zipkin, Datadog).
+
+**Grafana Tempo** — A distributed tracing backend that stores traces efficiently. It integrates with Grafana for visualization and supports the OTLP (OpenTelemetry Protocol) for receiving trace data over HTTP or gRPC.
+
+### 1.3 Prediction Exercise
+
+Before building the tracing system, consider this scenario:
+
+A `POST /register` request arrives at Flask. Flask validates the input (5ms), queues a Celery task (10ms), and returns a response (5ms). The Celery worker picks up the task and executes `send_welcome_email`, which connects to SMTP (1000ms), sends the email (3000ms), and updates the database (500ms).
+
+**Question:** How many spans will this request generate? What will the parent-child hierarchy look like? Write down your prediction.
+
+<details>
+<summary>Reveal Answer</summary>
+
+The request generates at least 7 spans:
+
+1. Root span: `POST /register` (parent of all Flask spans)
+2. Child span: `Validate input` (parent: root)
+3. Child span: `Queue task to Redis` (parent: root)
+4. Child span: `Return response` (parent: root)
+5. Child span: `send_welcome_email` (parent: root, different service)
+6. Grandchild span: `SMTP connect` (parent: send_welcome_email)
+7. Grandchild span: `Send email` (parent: send_welcome_email)
+8. Grandchild span: `Update database` (parent: send_welcome_email)
+
+Auto-instrumentation adds additional spans for Redis operations (RPUSH for queuing), making the total higher. All spans share the same Trace ID despite spanning two processes (Flask and Celery).
+
+</details>
+
+### 1.4 Checkpoint
+
+Verify your understanding before proceeding:
+
+- [ ] A trace represents one complete request; a span represents one operation within that request
+- [ ] Spans form parent-child hierarchies that show how operations nest
+- [ ] OpenTelemetry generates trace data; Tempo stores it; Grafana visualizes it
+- [ ] Distributed tracing connects operations across process boundaries using a shared Trace ID
+
+---
+
+## Chapter 2: Deploying the Observability Stack
+
+The tracing infrastructure requires two new services: Grafana Tempo to store traces, and Grafana to visualize them. Both run as Docker containers alongside the existing Redis service.
+
+### 2.1 Updating Docker Compose
+
+Update `docker-compose.yml` to include Tempo and Grafana:
 
 ```yaml
 version: '3.8'
@@ -262,13 +301,17 @@ services:
     volumes:
       - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
     ports:
-      - "3000:3000"
+      - "3001:3000"  # using 3001 instead of 3000 because poridhi vm reserved port 3000 for other purpose
     depends_on:
       - tempo
 
 volumes:
   tempo-data:
 ```
+
+The Tempo service listens on port 4318 for OTLP HTTP trace data and port 3200 for its HTTP API. Grafana connects to Tempo via the internal Docker network. Anonymous authentication is enabled for development—production deployments require proper authentication.
+
+### 2.2 Configuring Tempo
 
 Create the Tempo configuration file `tempo-config.yaml`:
 
@@ -292,10 +335,13 @@ storage:
       path: /tmp/tempo/wal
 ```
 
-**What this configures:**
-- **OTLP HTTP receiver** on port 4318 to accept traces from your application
-- **Local storage** for traces (suitable for development; use S3/GCS for production)
-- **Write-Ahead Log (WAL)** for durability
+This configuration sets up:
+
+- **OTLP HTTP receiver** on port 4318 to accept traces from the application
+- **Local storage** for trace data (suitable for development; use S3/GCS in production)
+- **Write-Ahead Log (WAL)** for durability during restarts
+
+### 2.3 Configuring the Grafana Datasource
 
 Create the Grafana datasource configuration `grafana-datasources.yaml`:
 
@@ -312,48 +358,78 @@ datasources:
     isDefault: true
 ```
 
-This tells Grafana to use Tempo as the default tracing backend.
+This file auto-provisions Tempo as the default tracing datasource when Grafana starts.
 
-Start the updated stack:
+### 2.4 Starting the Stack
+
+Start all containers:
 
 ```bash
 docker compose up -d
 ```
 
-Verify all containers are running:
+Verify all three containers are running:
 
 ```bash
 docker ps
 ```
 
-You should see three containers: `flask-celery-redis`, `tempo`, and `grafana`.
+![alt text](image.png)
 
-Access Grafana:
+Expected output shows three containers: `flask-celery-redis`, `tempo`, and `grafana`.
 
-```
-http://localhost:3000
-```
+### 2.5 Accessing Grafana using Poridhi's Load Balancer
 
-You should see the Grafana homepage (no login required due to our anonymous auth configuration).
+To access Grafana through Poridhi's Load Balancer, first find your wt0 IP address by running `ifconfig` and looking for the `wt0` interface. Note the IP address (something like `100.125.246.186`).
 
-![Grafana Homepage](images/image.png)
+![alt text](image.png)
 
-Click on **Explore** (compass icon in the left sidebar), then select **Tempo** as the datasource. You won't see any traces yet because we haven't instrumented our application.
+**Create Load Balancer:**
 
-## Step 2: Install OpenTelemetry Dependencies
+Go to Poridhi's Load Balancer dashboard, create a new Load Balancer, use your wt0 IP address with port 3000, and click "Create".
 
-Now let's install the OpenTelemetry SDK and auto-instrumentation packages.
+![alt text](image-1.png)
 
-Activate your virtual environment:
+![alt text](image-2.png)
+
+You will receive a public URL like `https://lb-xxxxx.poridhi.io` that provides access to Grafana from anywhere.
+
+Open the URL in a browser. The Grafana homepage loads without requiring login due to the anonymous authentication configuration.
+
+![alt text](image-3.png)
+
+Click **Explore** (compass icon in the left sidebar), then select **Tempo** as the datasource. No traces appear yet because the application has not been instrumented.
+
+![alt text](image-4.png)
+
+### 2.6 Checkpoint
+
+Before proceeding, verify:
+
+- [ ] Three Docker containers are running: `flask-celery-redis`, `tempo`, `grafana`
+- [ ] Grafana is accessible via the Load Balancer URL
+- [ ] Tempo appears as a datasource in Grafana Explore
+
+---
+
+## Chapter 3: Configuring OpenTelemetry
+
+With the tracing backend running, the next step is configuring the application to generate and export trace data. This requires installing the OpenTelemetry SDK and creating a centralized configuration module.
+
+### 3.1 Installing OpenTelemetry Packages
+
+Activate the virtual environment and install the required packages:
 
 ```bash
 source .venv/bin/activate
 ```
 
-Install the required packages:
-
 ```bash
 pip install \
+  setuptools==68.0.0 \
+  opentelemetry-api==1.22.0 \
+  opentelemetry-sdk==1.22.0 \
+  opentelemetry-instrumentation==0.43b0 \
   opentelemetry-distro==0.43b0 \
   opentelemetry-exporter-otlp==1.22.0 \
   opentelemetry-instrumentation-flask==0.43b0 \
@@ -361,18 +437,30 @@ pip install \
   opentelemetry-instrumentation-celery==0.43b0
 ```
 
-**What each package does:**
+The `setuptools` package at version 68.0.0 provides `pkg_resources`, which OpenTelemetry packages require for dependency management. Newer versions of setuptools (70+) changed the `pkg_resources` interface, causing compatibility issues. The `opentelemetry-api`, `opentelemetry-sdk`, and `opentelemetry-instrumentation` packages must be installed explicitly at matching versions. Without pinning these, pip may resolve transitive dependencies to incompatible versions, causing `ImportError` at startup.
 
-- **opentelemetry-distro**: Meta-package that includes the core SDK and auto-instrumentation tools
-- **opentelemetry-exporter-otlp**: OTLP exporter for sending traces to Tempo
-- **opentelemetry-instrumentation-flask**: Auto-instruments Flask to create spans for HTTP requests
-- **opentelemetry-instrumentation-redis**: Auto-instruments Redis operations (LPUSH, RPUSH, GET, SET)
-- **opentelemetry-instrumentation-celery**: Auto-instruments Celery task execution
+Each package serves a specific role:
 
-Update your `requirements.txt`:
+| Package | Purpose |
+|---------|---------|
+| `setuptools==68.0.0` | Provides `pkg_resources` required by OpenTelemetry (newer versions incompatible) |
+| `opentelemetry-api` | Core tracing API interfaces |
+| `opentelemetry-sdk` | SDK implementation of the tracing API |
+| `opentelemetry-instrumentation` | Base classes for all instrumentors (`BaseInstrumentor`) |
+| `opentelemetry-distro` | Meta-package for auto-instrumentation tools |
+| `opentelemetry-exporter-otlp` | OTLP exporter for sending traces to Tempo |
+| `opentelemetry-instrumentation-flask` | Auto-instruments Flask HTTP requests |
+| `opentelemetry-instrumentation-redis` | Auto-instruments Redis operations (LPUSH, RPUSH, GET, SET) |
+| `opentelemetry-instrumentation-celery` | Auto-instruments Celery task execution |
+
+Update `requirements.txt` to include the new dependencies:
 
 ```bash
 cat >> requirements.txt << EOF
+setuptools==68.0.0
+opentelemetry-api==1.22.0
+opentelemetry-sdk==1.22.0
+opentelemetry-instrumentation==0.43b0
 opentelemetry-distro==0.43b0
 opentelemetry-exporter-otlp==1.22.0
 opentelemetry-instrumentation-flask==0.43b0
@@ -381,9 +469,9 @@ opentelemetry-instrumentation-celery==0.43b0
 EOF
 ```
 
-## Step 3: Configure OpenTelemetry
+### 3.2 Creating the OpenTelemetry Configuration Module
 
-Create a new file `otel_config.py` to centralize OpenTelemetry configuration:
+Create a new file `otel_config.py` to centralize tracing configuration:
 
 ```python
 from opentelemetry import trace
@@ -392,15 +480,9 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME
 
-def configure_opentelemetry(service_name: str):
-    """
-    Configure OpenTelemetry with OTLP HTTP exporter.
 
-    Args:
-        service_name: Name of the service (e.g., 'flask-api', 'celery-worker')
-    """
-    # Create a resource with the service name
-    # This appears in Grafana to identify which service generated the span
+def configure_opentelemetry(service_name: str):
+    # Create a resource identifying this service in traces
     resource = Resource(attributes={
         SERVICE_NAME: service_name
     })
@@ -408,61 +490,93 @@ def configure_opentelemetry(service_name: str):
     # Create a tracer provider with the resource
     provider = TracerProvider(resource=resource)
 
-    # Create OTLP HTTP exporter pointing to Tempo
+    # Configure OTLP HTTP exporter pointing to Tempo
     otlp_exporter = OTLPSpanExporter(
         endpoint="http://localhost:4318/v1/traces",
-        timeout=10  # seconds
+        timeout=10
     )
 
-    # Use BatchSpanProcessor to batch spans before sending
-    # This is more efficient than sending each span individually
+    # Batch spans before sending for efficiency
     span_processor = BatchSpanProcessor(otlp_exporter)
     provider.add_span_processor(span_processor)
 
-    # Set the tracer provider as the global default
+    # Set as the global tracer provider
     trace.set_tracer_provider(provider)
 
-    print(f"✓ OpenTelemetry configured for service: {service_name}")
-    print(f"✓ Exporting traces to: http://localhost:4318/v1/traces")
+    print(f"OpenTelemetry configured for service: {service_name}")
+    print(f"Exporting traces to: http://localhost:4318/v1/traces")
 ```
 
-**Key Concepts:**
+Four components work together in this configuration:
 
-- **Resource**: Metadata about the service generating traces (service name, version, environment)
-- **TracerProvider**: Factory for creating tracers
-- **SpanExporter**: Sends spans to the backend (Tempo)
-- **BatchSpanProcessor**: Batches spans for efficiency instead of sending one at a time
+- **Resource** — Metadata identifying the service generating traces (name, version, environment)
+- **TracerProvider** — Factory that creates tracers for generating spans
+- **OTLPSpanExporter** — Sends spans to Tempo via HTTP
+- **BatchSpanProcessor** — Batches spans before export, reducing network overhead compared to sending each span individually
 
-## Step 4: Instrument the Flask Application
+### 3.3 Prediction Exercise
 
-Now let's add OpenTelemetry instrumentation to your Flask app.
+The configuration uses `BatchSpanProcessor` rather than sending each span immediately.
+
+**Question:** What would happen if the application sent every span individually to Tempo instead of batching? What trade-offs does batching introduce?
+
+<details>
+<summary>Reveal Answer</summary>
+
+Without batching, every span generates an HTTP request to Tempo. In a high-throughput application processing hundreds of requests per second, this could produce thousands of HTTP calls per second, overwhelming both the application and the tracing backend with network overhead.
+
+Batching collects spans over a time window (default 5 seconds) or until a batch size threshold is reached, then sends them in a single HTTP request. The trade-off: if the application crashes before a batch is exported, those spans are lost. For development this is acceptable. In production, configure the batch size and export interval based on throughput and durability requirements.
+
+</details>
+
+### 3.4 Checkpoint
+
+Verify your understanding:
+
+- [ ] Nine packages are installed with pinned versions: setuptools, OpenTelemetry api/sdk/instrumentation base, distro, OTLP exporter, Flask/Redis/Celery instrumentors
+- [ ] The `otel_config.py` module creates a TracerProvider with a service name Resource
+- [ ] BatchSpanProcessor batches spans before sending to reduce network overhead
+- [ ] The OTLP exporter targets `http://localhost:4318/v1/traces` (Tempo's HTTP endpoint)
+
+---
+
+## Chapter 4: Instrumenting Flask and Celery
+
+OpenTelemetry's auto-instrumentation creates spans automatically for Flask HTTP requests, Redis operations, and Celery task executions. This requires minimal code changes—two instrumentor calls in the Flask app and two in the Celery worker.
+
+### 4.1 Instrumenting the Flask Application
 
 Update `app/__init__.py` to enable auto-instrumentation:
 
 ```python
 from flask import Flask
-from celery import Celery
-from config import Config
 from celery_utils import make_celery
+from config import Config
+import logging
 
-# Import OpenTelemetry instrumentation
 from opentelemetry.instrumentation.flask import FlaskInstrumentor
 from opentelemetry.instrumentation.redis import RedisInstrumentor
 from otel_config import configure_opentelemetry
+
+
+# NEW: Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
-    # Configure OpenTelemetry for Flask service
+    # Configure OpenTelemetry for the Flask service
     configure_opentelemetry(service_name="flask-api")
 
-    # Auto-instrument Flask
-    # This automatically creates spans for all HTTP requests
+    # Auto-instrument Flask: creates spans for all HTTP requests
     FlaskInstrumentor().instrument_app(app)
 
-    # Auto-instrument Redis
-    # This creates spans for all Redis operations (RPUSH, GET, SET, etc.)
+    # Auto-instrument Redis: creates spans for all Redis operations
     RedisInstrumentor().instrument()
 
     # Register blueprints
@@ -471,104 +585,131 @@ def create_app(config_class=Config):
 
     return app
 
-# Create Celery instance
-celery = make_celery(create_app())
+app = create_app()
+celery = make_celery(app)
 
-# Import tasks to register them with Celery
 from app import tasks
 ```
 
-**What this does:**
+`FlaskInstrumentor` automatically creates a span for every HTTP request, capturing method, path, status code, and duration. `RedisInstrumentor` creates spans for Redis operations showing which commands executed and their latency.
 
-- **FlaskInstrumentor**: Automatically creates a span for every HTTP request with details like method, path, status code, duration
-- **RedisInstrumentor**: Creates spans for Redis operations showing which commands were executed and how long they took
+### 4.2 Instrumenting the Celery Worker
 
-## Step 5: Instrument the Celery Worker
-
-The Celery worker also needs instrumentation to create spans when executing tasks.
+**Important:** You must create a separate `worker.py` file to properly instrument the Celery worker with the correct service name. Using `celery -A app.celery worker` will use the Flask app's configuration and show the wrong service name.
 
 Create a new file `worker.py` to run the Celery worker with OpenTelemetry:
 
 ```python
-from app import celery
+import sys
+from celery import Celery
 from opentelemetry.instrumentation.celery import CeleryInstrumentor
 from otel_config import configure_opentelemetry
 
-# Configure OpenTelemetry for Celery worker
+# Configure OpenTelemetry for the Celery worker service FIRST
+# (before importing anything that might configure it)
 configure_opentelemetry(service_name="celery-worker")
 
-# Auto-instrument Celery
-# This creates spans for task execution
+# Auto-instrument Celery: creates spans for task execution
 CeleryInstrumentor().instrument()
 
+# Import the app and get celery instance after OpenTelemetry setup
+from app import celery
+
 if __name__ == '__main__':
-    # Start the Celery worker
-    celery.start()
+    # Start celery worker with proper arguments
+    celery.worker_main([
+        'worker',
+        '--loglevel=info'
+    ])
 ```
 
-**What this does:**
+`CeleryInstrumentor` creates spans when tasks execute, capturing task name, arguments, duration, and result status. The key is that this file configures OpenTelemetry with `service_name="celery-worker"` separately from the Flask app.
 
-- **CeleryInstrumentor**: Automatically creates spans when tasks are executed, showing task name, arguments, duration, and result
+### 4.3 Prediction Exercise
 
-## Step 6: Start the Instrumented Application
+Two different service names are configured: `flask-api` for the Flask application and `celery-worker` for the Celery worker.
 
-Now let's run everything with OpenTelemetry enabled.
+**Question:** Why use separate service names instead of a single name for the entire application? What would happen in Grafana if both services used the same name?
 
-**Terminal 1: Redis + Tempo + Grafana (already running)**
+<details>
+<summary>Reveal Answer</summary>
+
+Separate service names allow Grafana to distinguish which process generated each span. In the trace timeline, spans from `flask-api` and `celery-worker` appear in different colors, making it visually clear which service handled each operation. If both used the same name, all spans would appear as a single service, losing the ability to identify cross-service transitions and making it difficult to determine whether latency originates in the API layer or the worker layer.
+
+</details>
+
+### 4.4 Checkpoint
+
+Verify your instrumentation:
+
+- [ ] `FlaskInstrumentor` and `RedisInstrumentor` are initialized in `app/__init__.py`
+- [ ] The `worker.py` file is created with `CeleryInstrumentor` initialization
+- [ ] Flask and Celery use different service names (`flask-api` and `celery-worker`)
+- [ ] The worker is started with `python worker.py`, not `celery -A app.celery worker`
+- [ ] Auto-instrumentation creates spans without modifying business logic code
+
+---
+
+## Chapter 5: Generating and Visualizing Traces
+
+With instrumentation in place, start the application and generate traces to verify the tracing pipeline works end to end.
+
+### 5.1 Starting the Instrumented Application
+
+Open three terminals.
+
+**Terminal 1 — Docker containers (already running):**
 
 ```bash
 docker compose up -d
-docker ps  # Verify all containers are running
+docker ps
 ```
 
-**Terminal 2: Flask Application**
+**Terminal 2 — Flask application:**
 
 ```bash
 source .venv/bin/activate
 python run.py
 ```
 
-You should see the OpenTelemetry initialization message:
+The output should include the OpenTelemetry initialization message:
 
 ```
-✓ OpenTelemetry configured for service: flask-api
-✓ Exporting traces to: http://localhost:4318/v1/traces
+OpenTelemetry configured for service: flask-api
+Exporting traces to: http://localhost:4318/v1/traces
  * Running on http://127.0.0.1:5000
 ```
 
-**Terminal 3: Celery Worker**
+**Terminal 3 — Celery worker:**
 
-Instead of the old command, use the new instrumented worker:
+**Important:** Use the instrumented `worker.py` file, not the standard `celery` command:
 
 ```bash
 source .venv/bin/activate
-celery -A app.celery worker --loglevel=info
+python worker.py
 ```
 
-The worker will automatically pick up the instrumentation from `app/__init__.py` where we imported and registered `CeleryInstrumentor`.
-
-You should see:
+The worker output should include:
 
 ```
-✓ OpenTelemetry configured for service: celery-worker
-✓ Exporting traces to: http://localhost:4318/v1/traces
+OpenTelemetry configured for service: celery-worker
+Exporting traces to: http://localhost:4318/v1/traces
 [...] celery@hostname ready.
 ```
 
-## Step 7: Generate Traces
+**Critical:** The service name must show ONLY `celery-worker`. You should NOT see `flask-api` in the worker logs. If you see both service names, your `worker.py` imports are in the wrong order.
 
-Now let's trigger some requests and see the traces appear in Grafana.
+### 5.2 Triggering a Request
 
-**Terminal 4: Trigger requests**
+From a fourth terminal, send a registration request:
 
 ```bash
-# Send a welcome email task
 curl -X POST http://localhost:5000/register \
   -H "Content-Type: application/json" \
   -d '{"email": "alice@example.com"}'
 ```
 
-You'll get the usual response:
+Expected response:
 
 ```json
 {
@@ -577,31 +718,25 @@ You'll get the usual response:
 }
 ```
 
-Wait for the task to complete (5 seconds for `send_welcome_email`).
+Wait 5 seconds for the `send_welcome_email` task to complete.
 
-## Step 8: Visualize Traces in Grafana
+### 5.3 Viewing Traces in Grafana
 
-Open Grafana in your browser:
+Open Grafana in your browser via the Load Balancer URL.
 
-```
-http://localhost:3000
-```
+![alt text](image-5.png)
 
-Click on **Explore** (compass icon in the left sidebar).
+Navigate to **Explore** (compass icon in the left sidebar) and select **Tempo** as the datasource from the dropdown.
 
-Select **Tempo** as the datasource from the dropdown at the top.
+In the query section, click the **Search** tab, then click **Run query** without any filters to display all recent traces.
 
-In the query section, click **Search** tab and then click **Run query** without any filters to see all recent traces.
 
-![Grafana Explore Tempo](images/image-1.png)
 
-You should see trace entries. Click on one to open the trace details:
+Click on a trace entry to open the trace details:
 
-![Trace Timeline](images/image-2.png)
 
-**What you're seeing:**
 
-The trace timeline shows the complete journey of your request:
+The trace timeline shows the complete journey of the request:
 
 ```
 Trace Timeline (Total: ~5050ms)
@@ -613,33 +748,54 @@ Trace Timeline (Total: ~5050ms)
    └─ time.sleep(5) ───────────────────────────── 5000ms
 ```
 
-**Key Observations:**
+Key observations from this trace:
 
-1. **Two services**: `flask-api` and `celery-worker` (shown in different colors)
+1. **Two services** appear: `flask-api` and `celery-worker` (shown in different colors)
 2. **Parent-child relationship**: The Celery span is a child of the Flask span
 3. **Same Trace ID**: Both spans share the same trace ID, linking them together
-4. **Timing breakdown**: You can see exactly how long each operation took
+4. **Timing breakdown**: Each operation's duration is visible
 
-Click on individual spans to see attributes:
+### 5.4 Inspecting Span Attributes
 
-![Span Attributes](images/image-3.png)
+Click on individual spans to view their attributes:
 
-For the Flask span, you'll see:
+![alt text](image-4.png)
+
+The Flask span attributes include:
+
 - `http.method`: POST
 - `http.route`: /register
 - `http.status_code`: 201
 - `http.url`: http://localhost:5000/register
 
-For the Celery span, you'll see:
+The Celery span attributes include:
+
 - `celery.task_name`: app.tasks.send_welcome_email
 - `celery.action`: run
 - `celery.state`: SUCCESS
 
-## Step 9: Add Custom Spans
+These attributes are added automatically by the instrumentors—no manual code required.
 
-Auto-instrumentation is great, but it doesn't capture your business logic. Let's add custom spans to measure specific operations.
+### 5.5 Checkpoint
 
-Update `app/tasks.py` to add custom spans:
+Verify your tracing pipeline:
+
+- [ ] Flask shows "OpenTelemetry configured for service: flask-api" on startup
+- [ ] Celery shows "OpenTelemetry configured for service: celery-worker" on startup (not flask-api)
+- [ ] Traces appear in Grafana after sending a request
+- [ ] Trace timelines show both `flask-api` and `celery-worker` spans in different colors
+- [ ] Total trace duration is around 5+ seconds (not just milliseconds)
+- [ ] Clicking a span reveals auto-captured attributes (HTTP method, task name, etc.)
+
+---
+
+## Chapter 6: Adding Custom Spans
+
+Auto-instrumentation captures framework-level operations (HTTP requests, Redis commands, task execution), but it does not capture business logic. Custom spans provide visibility into specific operations within your code.
+
+### 6.1 Custom Spans in Celery Tasks
+
+Update `app/tasks.py` to add custom spans that measure each step of the email sending process:
 
 ```python
 from celery import Task
@@ -648,10 +804,8 @@ import time
 import random
 import logging
 
-# Import OpenTelemetry for manual instrumentation
 from opentelemetry import trace
 
-# Get a tracer for this module
 tracer = trace.get_tracer(__name__)
 
 logger = logging.getLogger(__name__)
@@ -660,18 +814,15 @@ logger = logging.getLogger(__name__)
 
 @celery.task(bind=True, max_retries=3, default_retry_delay=5)
 def send_welcome_email(self, user_email):
-    """Send welcome email with custom span instrumentation."""
 
-    # Create a custom span for email validation
+    # Custom span for email validation
     with tracer.start_as_current_span("validate_email") as span:
-        # Add custom attributes to the span
         span.set_attribute("email.address", user_email)
         span.set_attribute("email.domain", user_email.split('@')[-1])
 
         logger.info(f"send_welcome_email: Validating email {user_email}")
-        time.sleep(0.1)  # Simulate validation
+        time.sleep(0.1)
 
-        # Check for invalid email format
         if '@' not in user_email:
             span.set_attribute("email.valid", False)
             span.set_attribute("error", True)
@@ -679,35 +830,35 @@ def send_welcome_email(self, user_email):
 
         span.set_attribute("email.valid", True)
 
-    # Create a custom span for SMTP connection
+    # Custom span for SMTP connection
     with tracer.start_as_current_span("smtp_connect") as span:
         span.set_attribute("smtp.server", "smtp.example.com")
         span.set_attribute("smtp.port", 587)
 
         logger.info(f"send_welcome_email: Connecting to SMTP server")
-        time.sleep(1)  # Simulate SMTP connection
+        time.sleep(1)
 
         span.set_attribute("smtp.connected", True)
 
-    # Create a custom span for sending email
+    # Custom span for sending the email
     with tracer.start_as_current_span("send_email_message") as span:
         span.set_attribute("email.to", user_email)
         span.set_attribute("email.subject", "Welcome to Our Platform")
 
         logger.info(f"send_welcome_email: Sending email to {user_email}")
-        time.sleep(3)  # Simulate email sending
+        time.sleep(3)
 
         span.set_attribute("email.sent", True)
         span.set_attribute("email.message_id", f"<{int(time.time())}@example.com>")
 
-    # Create a custom span for database update
+    # Custom span for database update
     with tracer.start_as_current_span("update_user_record") as span:
         span.set_attribute("db.operation", "UPDATE")
         span.set_attribute("db.table", "users")
         span.set_attribute("user.email", user_email)
 
         logger.info(f"send_welcome_email: Updating user record")
-        time.sleep(0.5)  # Simulate database update
+        time.sleep(0.5)
 
         span.set_attribute("db.rows_affected", 1)
 
@@ -715,68 +866,17 @@ def send_welcome_email(self, user_email):
     return f"Welcome email sent to {user_email}"
 ```
 
-**What we added:**
+Each `tracer.start_as_current_span()` call creates a nested span within the parent `send_welcome_email` span. Custom attributes attached to each span provide metadata for debugging and filtering—email addresses, SMTP server details, database operations.
 
-- **Custom spans**: Using `tracer.start_as_current_span()` to create nested spans
-- **Custom attributes**: Adding metadata like email address, SMTP server, database table
-- **Business logic visibility**: Each step of the email sending process is now visible in the trace
+### 6.2 Custom Spans in Flask Routes
 
-Restart your Flask app and Celery worker to pick up the changes.
-
-Trigger another request:
-
-```bash
-curl -X POST http://localhost:5000/register \
-  -H "Content-Type: application/json" \
-  -d '{"email": "bob@example.com"}'
-```
-
-Go back to Grafana and find the new trace:
-
-![Trace with Custom Spans](images/image-4.png)
-
-Now you'll see a much more detailed timeline:
-
-```
-Trace Timeline (Total: ~5700ms)
-├─ POST /register [flask-api] ───────────────── 50ms
-│  ├─ RPUSH celery (Redis) ────────────────────── 10ms
-│  └─ Return HTTP 201 ──────────────────────────── 5ms
-└─ send_welcome_email [celery-worker] ─────── 5650ms
-   ├─ validate_email ──────────────────────────── 100ms
-   ├─ smtp_connect ────────────────────────────── 1000ms
-   ├─ send_email_message ──────────────────────── 3000ms
-   └─ update_user_record ──────────────────────── 500ms
-```
-
-Click on the `send_email_message` span to see custom attributes:
-
-![Custom Span Attributes](images/image-5.png)
-
-You'll see:
-- `email.to`: bob@example.com
-- `email.subject`: Welcome to Our Platform
-- `email.sent`: true
-- `email.message_id`: <1675789234@example.com>
-
-This is incredibly powerful for debugging. If an email fails to send, you can:
-1. Find the trace in Grafana
-2. See which step failed (SMTP connection? Email sending? Database update?)
-3. See the exact error message and attributes
-4. Measure how long each step took before the failure
-
-## Step 10: Add Custom Spans to Flask Routes
-
-Let's also add custom spans to the Flask API layer.
-
-Update `app/routes.py`:
+Update `app/routes.py` to add custom spans to the API layer:
 
 ```python
 from flask import Blueprint, request, jsonify
 from app.tasks import send_welcome_email, generate_monthly_report, flaky_task, slow_task
 from app import celery
 
-# Import OpenTelemetry for manual instrumentation
 from opentelemetry import trace
 import logging
 
@@ -787,13 +887,10 @@ bp = Blueprint('main', __name__)
 
 @bp.route('/register', methods=['POST'])
 def register():
-    """Register user and send welcome email."""
-
-    # Get request data
     data = request.get_json()
     email = data.get('email')
 
-    # Create a custom span for input validation
+    # Custom span for input validation
     with tracer.start_as_current_span("validate_request") as span:
         span.set_attribute("request.email", email)
 
@@ -804,7 +901,7 @@ def register():
 
         span.set_attribute("validation.passed", True)
 
-    # Create a custom span for task queuing
+    # Custom span for task queuing
     with tracer.start_as_current_span("queue_email_task") as span:
         span.set_attribute("task.name", "send_welcome_email")
         span.set_attribute("task.args", email)
@@ -815,7 +912,7 @@ def register():
         span.set_attribute("task.id", result.id)
         span.set_attribute("task.state", result.state)
 
-    # Create a custom span for response construction
+    # Custom span for response construction
     with tracer.start_as_current_span("build_response") as span:
         response_data = {
             "message": "User registered. Welcome email is being sent in the background.",
@@ -830,20 +927,24 @@ def register():
 # ... other routes remain the same ...
 ```
 
-Restart the Flask app and trigger a request:
+### 6.3 Testing Custom Spans
+
+Restart the Flask application and Celery worker to pick up the changes.
+
+Trigger a new request:
 
 ```bash
 curl -X POST http://localhost:5000/register \
   -H "Content-Type: application/json" \
-  -d '{"email": "charlie@example.com"}'
+  -d '{"email": "bob@example.com"}'
 ```
 
-In Grafana, you'll now see even more detail in the Flask portion of the trace:
+In Grafana, find the new trace. The timeline now shows detailed breakdowns for both services:
 
-![Detailed Flask Spans](images/image-6.png)
+![alt text](image-5.png)
 
 ```
-Trace Timeline
+Trace Timeline (Total: ~5700ms)
 ├─ POST /register [flask-api] ───────────────── 50ms
 │  ├─ validate_request ────────────────────────── 5ms
 │  ├─ queue_email_task ────────────────────────── 10ms
@@ -856,47 +957,55 @@ Trace Timeline
    └─ update_user_record ──────────────────────── 500ms
 ```
 
-This gives you complete visibility from the HTTP request all the way through to task completion.
+Click on the `send_email_message` span to view custom attributes:
 
-## Step 11: Understanding Trace Propagation
+![alt text](image-6.png)
 
-You might be wondering: "How does Celery know to continue the same trace that Flask started?"
+The attributes show:
 
-The answer is **trace propagation**—the process of passing trace context (Trace ID and Span ID) from one service to another.
+- `email.to`: bob@example.com
+- `email.subject`: Welcome to Our Platform
+- `email.sent`: true
+- `email.message_id`: <1675789234@example.com>
 
-Here's how it works:
+If an email fails to send, these attributes immediately reveal which step failed (SMTP connection? Email delivery? Database update?), the exact error, and how long each step took before the failure.
 
-1. **Flask receives HTTP request**
-   - OpenTelemetry generates a new Trace ID: `abc-123`
-   - Creates a root span with Span ID: `span-1`
+### 6.4 Checkpoint
 
-2. **Flask queues Celery task**
-   - OpenTelemetry automatically injects trace context into the task payload
-   - The task message in Redis includes: `{"trace_id": "abc-123", "parent_span_id": "span-1", ...}`
+Verify your custom instrumentation:
 
-3. **Celery worker picks up task**
-   - OpenTelemetry extracts trace context from the task payload
-   - Creates a new span with the same Trace ID: `abc-123`
-   - Sets parent to `span-1` (the Flask span)
+- [ ] Custom spans appear in the trace timeline for both Flask and Celery operations
+- [ ] Each custom span carries relevant attributes (email address, SMTP server, task ID)
+- [ ] The span hierarchy nests correctly: HTTP request > validate_request > queue_email_task
+- [ ] Auto-instrumented spans (Redis RPUSH) still appear alongside custom spans
 
-4. **Both spans end up in Tempo**
-   - Tempo stitches them together using the Trace ID
-   - Grafana displays them as a single unified trace
+---
 
-You can verify this by looking at the span details in Grafana:
+## Chapter 7: Trace Propagation and Performance Analysis
 
-![Trace Propagation](images/image-7.png)
+Distributed tracing works across process boundaries because trace context propagates automatically from Flask to Celery. This chapter examines how propagation works and demonstrates performance analysis using traces.
 
-- **Flask span**: `trace_id=abc-123`, `span_id=span-1`, `parent_span_id=null`
-- **Celery span**: `trace_id=abc-123`, `span_id=span-2`, `parent_span_id=span-1`
+### 7.1 How Trace Propagation Works
 
-This is what makes distributed tracing "distributed"—traces automatically propagate across service boundaries.
+When Flask queues a Celery task, four steps occur:
 
-## Step 12: Performance Analysis with Traces
+1. **Flask receives the HTTP request** — OpenTelemetry generates a new Trace ID (e.g., `abc-123`) and creates a root span with a Span ID (e.g., `span-1`)
+2. **Flask queues the Celery task** — OpenTelemetry automatically injects trace context into the task payload. The task message in Redis includes `{"trace_id": "abc-123", "parent_span_id": "span-1", ...}`
+3. **Celery worker picks up the task** — OpenTelemetry extracts trace context from the task payload, creates a new span with the same Trace ID (`abc-123`), and sets its parent to `span-1`
+4. **Both spans arrive in Tempo** — Tempo stitches them together using the shared Trace ID. Grafana displays them as a single unified trace
 
-Now let's use traces to identify performance bottlenecks.
+Verify this by examining span details in Grafana:
 
-Trigger a report generation task (which simulates heavy CPU work):
+![alt text](image-7.png)
+
+- Flask span: `trace_id=abc-123`, `span_id=span-1`, `parent_span_id=null`
+- Celery span: `trace_id=abc-123`, `span_id=span-2`, `parent_span_id=span-1`
+
+This automatic propagation is what makes distributed tracing "distributed"—traces follow requests across service boundaries without manual correlation.
+
+### 7.2 Performance Analysis with Traces
+
+Trigger a report generation task to observe how traces reveal performance bottlenecks:
 
 ```bash
 curl -X POST http://localhost:5000/reports/generate \
@@ -904,9 +1013,9 @@ curl -X POST http://localhost:5000/reports/generate \
   -d '{"user_id": 42}'
 ```
 
-Find the trace in Grafana. You'll see:
+Find the trace in Grafana:
 
-![Report Generation Trace](images/image-8.png)
+![alt text](image-8.png)
 
 ```
 Trace Timeline (Total: ~10050ms)
@@ -915,20 +1024,13 @@ Trace Timeline (Total: ~10050ms)
    └─ time.sleep(10) ──────────────────────────── 10000ms
 ```
 
-The bottleneck is obvious: 99.5% of the time is spent in the task execution.
+The bottleneck is immediately visible: 99.5% of the total time is spent in task execution. Flask's contribution is negligible at 50ms.
 
-**Use Case: Optimizing Slow Endpoints**
-
-Imagine you have a production endpoint that's slow. Without tracing, you might guess:
-- "Maybe the database is slow?"
-- "Is Redis the bottleneck?"
-- "Is the external API taking too long?"
-
-With tracing, you just look at the timeline and see exactly where the time is spent:
+Without tracing, debugging a slow endpoint requires guessing: Is the database slow? Is Redis the bottleneck? Is an external API taking too long? With tracing, the timeline shows exactly where the time is spent:
 
 ```
 Trace: GET /user/profile
-├─ Database query: users ───────────── 150ms  ← Slow!
+├─ Database query: users ───────────── 150ms
 ├─ Database query: orders ──────────── 50ms
 ├─ External API: payment_service ───── 20ms
 ├─ Redis GET: user_cache ───────────── 5ms
@@ -936,33 +1038,26 @@ Trace: GET /user/profile
 Total: 235ms
 ```
 
-Now you know to optimize the `users` query, not the external API or Redis.
+The `users` database query consumes 64% of the total time—the optimization target is immediately clear.
 
-## Step 13: Filtering and Searching Traces
+### 7.3 Checkpoint
 
-As your system processes thousands of requests, you need to filter traces to find specific ones.
+Verify your understanding of trace propagation:
 
-Grafana Tempo supports several search methods:
+- [ ] Trace context (Trace ID and Span ID) propagates automatically from Flask to Celery
+- [ ] OpenTelemetry injects trace context into the Redis task payload
+- [ ] Both Flask and Celery spans share the same Trace ID
+- [ ] Performance bottlenecks are identifiable by comparing span durations in the timeline
 
-### Search by Trace ID
+---
 
-If you have a task ID from your Flask API, you can find the corresponding trace.
+## Chapter 8: Searching and Monitoring Traces
 
-Copy a task ID from a previous curl response:
+As the system processes thousands of requests, finding specific traces requires filtering and search capabilities. Grafana Tempo supports TraceQL, a query language for searching traces by attributes.
 
-```json
-{"task_id": "a1b2c3d4-5678-90ef-ghij-klmnopqrstuv"}
-```
+### 8.1 Searching by Service Name
 
-In Grafana Explore, switch to the **TraceQL** tab and search:
-
-```
-{span.task.id="a1b2c3d4-5678-90ef-ghij-klmnopqrstuv"}
-```
-
-This finds the exact trace for that task.
-
-### Search by Service Name
+In Grafana Explore, switch to the **TraceQL** tab.
 
 Find all traces from the Flask API:
 
@@ -976,9 +1071,11 @@ Find all traces from the Celery worker:
 {resource.service.name="celery-worker"}
 ```
 
-### Search by Span Attributes
+### 8.2 Searching by Span Attributes
 
-Find all traces for a specific user's email:
+Custom attributes added in Chapter 6 enable targeted searches.
+
+Find all traces for a specific email:
 
 ```
 {span.email.address="alice@example.com"}
@@ -990,13 +1087,13 @@ Find all failed email validations:
 {span.email.valid=false}
 ```
 
-Find traces where SMTP connection was slow (>2 seconds):
+Find traces where SMTP connection exceeded 2 seconds:
 
 ```
 {resource.service.name="celery-worker" && name="smtp_connect"} | duration > 2s
 ```
 
-### Search by HTTP Status Code
+### 8.3 Searching by HTTP Status Code
 
 Find all failed API requests:
 
@@ -1004,287 +1101,309 @@ Find all failed API requests:
 {span.http.status_code>=400}
 ```
 
-These search capabilities make it easy to debug production issues when you have millions of traces.
+Find server errors specifically:
 
-## Step 14: Monitoring Error Traces
+```
+{span.http.status_code>=500}
+```
 
-Let's trigger an error and see how it appears in traces.
+### 8.4 Monitoring Error Traces
 
-Trigger the flaky task that randomly fails:
+Trigger the flaky task that fails randomly (70% failure rate):
 
 ```bash
 curl -X POST http://localhost:5000/test-reliability
 ```
 
-If it fails (70% chance), go to Grafana and find the trace:
+If the task fails, find its trace in Grafana:
 
-![Error Trace](images/image-9.png)
+![alt text](image-9.png)
 
-You'll see:
-- The span is marked with a red error indicator
+Error traces display:
+
+- A red error indicator on the span
 - Span status: `ERROR`
 - Exception type: `Exception`
 - Exception message: `"Simulated random failure"`
-- Full stack trace attached to the span
 
-Click on the span to see error details:
+Click on the span to see the full error details:
 
-![Error Span Details](images/image-10.png)
+![alt text](image-10.png)
 
-Attributes include:
+Span attributes for errors include:
+
 - `exception.type`: Exception
 - `exception.message`: Simulated random failure
-- `exception.stacktrace`: [full Python traceback]
+- `exception.stacktrace`: The complete Python traceback
 
-This is incredibly valuable for debugging production errors—you can see the exact error, the full stack trace, and the context (what arguments were passed, what the state was before the error).
+This visibility eliminates the need to search through log files for error context. The trace shows the exact error, the full stack trace, and all contextual attributes (task arguments, timing, service name).
 
-## Step 15: Creating a Simple Performance Dashboard
+### 8.5 Checkpoint
 
-While Grafana Explore is great for ad-hoc investigation, you can also create dashboards for ongoing monitoring.
+Verify your understanding of trace search capabilities:
 
-In Grafana, click **Dashboards** → **New** → **New Dashboard** → **Add visualization**.
+- [ ] TraceQL filters traces by service name, span attributes, and duration
+- [ ] Custom span attributes (added in Chapter 6) are searchable in Grafana
+- [ ] Error traces display exception type, message, and full stack trace
+- [ ] HTTP status code filtering enables monitoring API error rates
 
-Select **Tempo** as the datasource.
+---
 
-In the query editor, use TraceQL to find slow traces:
+## Epilogue: The Complete System
 
-```
-{resource.service.name="celery-worker"} | duration > 3s
-```
+Your Flask-Celery application now has a complete distributed tracing pipeline:
 
-Configure the visualization as a **Table** showing:
-- Trace ID
-- Service name
-- Duration
-- Timestamp
+| Component | Role | Port |
+|-----------|------|------|
+| Flask API | Generates root spans for HTTP requests | 5000 |
+| Celery Worker | Generates child spans for task execution | — |
+| Redis | Broker and result backend; propagates trace context | 6379 |
+| Grafana Tempo | Stores and indexes trace data | 4318 (OTLP), 3200 (API) |
+| Grafana | Visualizes traces and supports TraceQL queries | 3000 |
 
-Save the panel as "Slow Celery Tasks (>3s)".
+| File | Purpose |
+|------|---------|
+| `docker-compose.yml` | Defines Redis, Tempo, and Grafana services |
+| `tempo-config.yaml` | Configures Tempo's OTLP receiver and storage |
+| `grafana-datasources.yaml` | Auto-provisions Tempo as Grafana's datasource |
+| `otel_config.py` | Centralizes OpenTelemetry configuration |
+| `app/__init__.py` | Instruments Flask and Redis with auto-instrumentors |
+| `worker.py` | Instruments Celery with auto-instrumentor |
+| `app/tasks.py` | Custom spans for business logic in Celery tasks |
+| `app/routes.py` | Custom spans for API layer operations |
 
-Add another panel for error rate:
+Verify the complete system by running these commands in sequence:
 
-```
-{resource.service.name="flask-api" && span.http.status_code>=500}
-```
+```bash
+# Verify containers are running
+docker ps
 
-Now you have a dashboard showing:
-- Recent slow tasks
-- Recent API errors
-- Service health overview
+# Trigger a traced request
+curl -X POST http://localhost:5000/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "verify@example.com"}'
 
-This gives you continuous visibility without manually searching traces.
+# Wait for task completion
+sleep 6
 
-## Best Practices for Distributed Tracing
+# Trigger a report generation
+curl -X POST http://localhost:5000/reports/generate \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": 42}'
 
-Based on your experience in this lab, here are key best practices:
-
-### 1. Use Semantic Attribute Names
-
-Follow OpenTelemetry semantic conventions for attribute names:
-
-**Good:**
-```python
-span.set_attribute("http.method", "POST")
-span.set_attribute("db.operation", "SELECT")
-span.set_attribute("messaging.destination", "celery")
-```
-
-**Bad:**
-```python
-span.set_attribute("method", "POST")  # Too generic
-span.set_attribute("operation", "SELECT")  # Unclear
-span.set_attribute("queue", "celery")  # Not standard
-```
-
-Semantic conventions make traces searchable and correlatable across services.
-
-### 2. Don't Trace Everything
-
-Tracing adds overhead. Focus on:
-- HTTP requests (automatic)
-- Database queries (automatic with instrumentation)
-- External API calls (automatic with instrumentation)
-- Key business operations (manual spans)
-
-**Don't trace:**
-- Utility functions (string formatting, logging)
-- Tight loops (millions of spans will overwhelm the backend)
-- Hot code paths that run thousands of times per request
-
-### 3. Add Contextual Attributes
-
-The value of tracing comes from attributes:
-
-```python
-# Minimal span (not very useful)
-with tracer.start_as_current_span("process_order"):
-    process_order(order_id)
-
-# Rich span (very useful for debugging)
-with tracer.start_as_current_span("process_order") as span:
-    span.set_attribute("order.id", order_id)
-    span.set_attribute("order.amount", order.amount)
-    span.set_attribute("order.currency", order.currency)
-    span.set_attribute("user.id", order.user_id)
-    span.set_attribute("payment.method", order.payment_method)
-    process_order(order_id)
+# Trigger a flaky task
+curl -X POST http://localhost:5000/test-reliability
 ```
 
-When debugging "Why did order 12345 fail?", the rich span tells you everything you need.
+Open Grafana and verify that traces appear for all three requests, showing span hierarchies, custom attributes, and timing breakdowns.
 
-### 4. Use Sampling in Production
+---
 
-Tracing every single request in production is expensive. Use sampling:
+## The Principles
 
-```python
-from opentelemetry.sdk.trace.sampling import TraceIdRatioBased
+1. **Trace at service boundaries** — Auto-instrument HTTP requests, message queues, and database operations to capture the complete request flow without manual code changes.
 
-# Trace 10% of requests
-sampler = TraceIdRatioBased(0.1)
-provider = TracerProvider(sampler=sampler, resource=resource)
-```
+2. **Add custom spans for business logic** — Auto-instrumentation captures framework operations but not domain-specific steps. Custom spans reveal precisely where time is spent within application logic.
 
-For critical endpoints, use 100% sampling. For high-traffic endpoints, use 1-10%.
+3. **Enrich spans with attributes** — Spans without attributes show timing but not context. Adding relevant metadata (email addresses, user IDs, task names) makes traces searchable and debuggable.
 
-### 5. Set Trace Retention Policies
+4. **Batch span exports** — Individual span exports generate excessive network overhead. BatchSpanProcessor reduces this by collecting spans before sending, trading slight latency for significant throughput improvement.
 
-Traces take up storage. Set retention policies:
+5. **Use semantic attribute names** — Follow OpenTelemetry semantic conventions (`http.method`, `db.operation`, `messaging.destination`) rather than inventing custom names. Semantic conventions enable cross-service correlation and standard tooling.
 
-- **Recent traces**: Keep for 7 days (for debugging current issues)
-- **Sampled historical traces**: Keep for 30 days (for trend analysis)
-- **Long-term storage**: Export to S3/GCS and keep for 1 year (for compliance)
+6. **Sample in production** — Tracing every request in high-throughput production systems is expensive. Use ratio-based sampling to capture a representative subset while maintaining full tracing for critical endpoints.
 
-In production Tempo, configure retention in `tempo.yaml`:
+---
 
-```yaml
-storage:
-  trace:
-    backend: s3
-    s3:
-      bucket: my-traces
-      endpoint: s3.amazonaws.com
-    pool:
-      max_workers: 100
-    wal:
-      path: /tmp/tempo/wal
-    blocklist_poll: 5m
-```
+## Troubleshooting
 
-### 6. Correlate Traces with Logs
+### No traces appear in Grafana
 
-Add trace IDs to your logs:
-
-```python
-from opentelemetry import trace
-import logging
-
-logger = logging.getLogger(__name__)
-
-def my_function():
-    # Get current trace context
-    span = trace.get_current_span()
-    trace_id = span.get_span_context().trace_id
-
-    # Log with trace ID
-    logger.info(f"Processing request [trace_id={trace_id:032x}]")
-```
-
-Now when you see an error in your logs, you can copy the trace ID and find the full trace in Grafana.
-
-## Common Troubleshooting
-
-### Issue 1: No Traces Appear in Grafana
-
-**Symptoms:** You trigger requests but don't see traces in Grafana.
-
-**Possible Causes:**
-1. Tempo is not running or not accessible
-2. OTLP exporter is configured incorrectly
-3. Flask/Celery didn't initialize OpenTelemetry
-4. Firewall blocking port 4318
+**Cause:** Tempo is not running, the OTLP exporter is misconfigured, or the application did not initialize OpenTelemetry.
 
 **Solution:**
+
 ```bash
-# Check Tempo is running
+# Verify Tempo is running
 docker ps | grep tempo
 
-# Check Tempo logs
+# Check Tempo logs for errors
 docker logs tempo
 
-# Test OTLP endpoint
+# Test OTLP endpoint directly
 curl -X POST http://localhost:4318/v1/traces \
   -H "Content-Type: application/json" \
   -d '{}'
 
-# Verify Flask logs show OTel initialization
-# Should see: "✓ OpenTelemetry configured for service: flask-api"
+# Verify Flask logs show OpenTelemetry initialization
+# Expected: "OpenTelemetry configured for service: flask-api"
 ```
 
-### Issue 2: Traces Are Fragmented (Flask and Celery Not Linked)
+### Traces are fragmented (Flask and Celery not linked)
 
-**Symptoms:** You see two separate traces instead of one unified trace.
-
-**Possible Causes:**
-1. Celery instrumentation not enabled
-2. Trace context not propagating through Redis
+**Cause:** Celery instrumentation is not enabled, trace context is not propagating through Redis, or the Celery worker is using the wrong service name.
 
 **Solution:**
-- Ensure `CeleryInstrumentor().instrument()` is called in the worker
-- Verify both Flask and Celery are using the same OTLP endpoint
-- Check Celery task logs for OpenTelemetry messages
 
-### Issue 3: Too Many Spans, Overwhelming the UI
+- **Check service name:** Ensure the Celery worker shows `OpenTelemetry configured for service: celery-worker`, not `flask-api`
+- **Use correct startup:** Start with `python worker.py`, not `celery -A app.celery worker`
+- Verify `CeleryInstrumentor().instrument()` is called in the worker
+- Confirm both Flask and Celery target the same OTLP endpoint
+- Check Celery worker logs for OpenTelemetry initialization messages
 
-**Symptoms:** Trace has hundreds of spans and is hard to read.
+### "Overriding of current TracerProvider is not allowed" warning
 
-**Possible Causes:**
-1. Auto-instrumentation is too aggressive
-2. Tracing inside tight loops
+**Cause:** OpenTelemetry is being configured multiple times, typically when the Flask app is imported before the Celery worker configures its own OpenTelemetry instance.
 
 **Solution:**
+
+Ensure OpenTelemetry is configured for the Celery worker BEFORE importing the Flask app in `worker.py`:
+
+```python
+# Correct order:
+# 1. Configure OpenTelemetry for celery-worker
+configure_opentelemetry(service_name="celery-worker")
+
+# 2. Instrument Celery
+CeleryInstrumentor().instrument()
+
+# 3. THEN import the Flask app
+from app import celery
+```
+
+If you see both service names ("flask-api" and "celery-worker") in the startup logs, reorder your imports.
+
+### No such command 'worker.py' error
+
+**Cause:** The `celery.start()` method tries to parse command line arguments and doesn't recognize `worker.py` as a valid Celery command.
+
+**Solution:**
+
+Use `celery.worker_main()` instead of `celery.start()` in your `worker.py` file:
+
+```python
+if __name__ == '__main__':
+    # Wrong - causes command parsing error
+    celery.start()
+    
+    # Correct - starts worker directly
+    celery.worker_main([
+        'worker',
+        '--loglevel=info'
+    ])
+```
+
+This method bypasses the command-line parsing and starts the worker process directly.
+
+### Worker shows wrong service name (flask-api instead of celery-worker)
+
+**Cause:** Starting the worker with `celery -A app.celery worker` imports the Flask app configuration, which sets the service name to `flask-api`. Or the `worker.py` file imports the Flask app before configuring OpenTelemetry, causing Flask's configuration to run first.
+
+**Solution:**
+
+Always use the instrumented worker file that configures OpenTelemetry BEFORE importing the Flask app:
+
+```bash
+# Wrong - uses Flask app configuration
+celery -A app.celery worker --loglevel=info
+
+# Correct - uses dedicated worker configuration
+python worker.py
+```
+
+If you see both "flask-api" and "celery-worker" service names in the startup logs, your `worker.py` is importing the Flask app too early. The correct order is:
+
+1. Configure OpenTelemetry with `service_name="celery-worker"`
+2. Instrument Celery
+3. Import the Flask app
+4. Start the worker
+
+Restart the worker with the correct command. You should see ONLY `OpenTelemetry configured for service: celery-worker` in the output.
+
+### ModuleNotFoundError: No module named 'pkg_resources'
+
+**Cause:** The `setuptools` package is missing or incompatible. OpenTelemetry packages require `pkg_resources` from `setuptools`, but setuptools 70+ changed the `pkg_resources` interface.
+
+**Solution:**
+
+Downgrade to a compatible setuptools version:
+
+```bash
+pip install setuptools==68.0.0
+```
+
+This error occurs when setuptools 70+ is installed, as these versions changed how `pkg_resources` works. OpenTelemetry requires the older interface.
+
+### ImportError from opentelemetry.instrumentation.instrumentor
+
+**Cause:** The `opentelemetry-instrumentation` base package is missing or its version is incompatible with the instrumentor packages. This occurs when pip resolves transitive dependencies to mismatched versions.
+
+**Solution:**
+
+Install the base packages explicitly at matching versions:
+
+```bash
+pip install setuptools==68.0.0 \
+  opentelemetry-api==1.22.0 \
+  opentelemetry-sdk==1.22.0 \
+  opentelemetry-instrumentation==0.43b0
+```
+
+The version `0.43b0` (instrumentation) corresponds to `1.22.0` (API/SDK). These must match. If versions drift, the `BaseInstrumentor` import fails.
+
+### Too many spans overwhelm the UI
+
+**Cause:** Auto-instrumentation captures every operation including high-frequency internal calls.
+
+**Solution:**
+
 ```python
 # Disable specific auto-instrumentation
 from opentelemetry.instrumentation.redis import RedisInstrumentor
-RedisInstrumentor().uninstrument()  # Disable Redis tracing
+RedisInstrumentor().uninstrument()
 
-# Or conditionally create spans
+# Or create spans conditionally
 if condition_worth_tracing:
     with tracer.start_as_current_span("operation"):
         do_work()
 else:
-    do_work()  # No span
+    do_work()
 ```
 
-## Summary
+---
 
-In this lab, you built a complete local observability stack with Grafana Tempo and instrumented your Flask-Celery application for distributed tracing. You learned how to:
+## Next Steps
 
-1. **Deploy observability infrastructure** with Grafana and Tempo using Docker Compose
-2. **Auto-instrument** Flask, Redis, and Celery using OpenTelemetry to capture traces automatically
-3. **Configure OTLP exporter** to send traces from your application to Tempo
-4. **Visualize traces** in Grafana showing complete request timelines across services
-5. **Add custom spans** to instrument business logic and measure specific operations
-6. **Enrich spans** with custom attributes for better debugging and filtering
-7. **Understand trace propagation** across service boundaries (Flask → Celery)
-8. **Identify performance bottlenecks** by analyzing span durations in the trace timeline
-9. **Search and filter traces** using TraceQL to find specific requests or errors
-10. **Debug production errors** using exception details and stack traces attached to spans
+This lab established local distributed tracing. Several extensions deepen observability capabilities:
 
-**Key Takeaways:**
+- **Custom spans for database queries** — Instrument database operations to identify slow queries and N+1 query problems in traces
+- **Nested span hierarchies** — Create multi-level span trees that map to internal function call chains
+- **External API tracing** — Add spans for outbound HTTP calls with request/response attributes
+- **Trace-log correlation** — Embed trace IDs in log entries so log searches link directly to trace visualizations
+- **Production sampling strategies** — Configure ratio-based or priority-based sampling to control trace volume
+- **Performance dashboards** — Create Grafana dashboards with TraceQL queries to monitor slow tasks and API error rates continuously
 
-- **Distributed tracing provides end-to-end visibility** across your entire application stack
-- **Auto-instrumentation** gives you immediate value with minimal code changes
-- **Custom spans** let you measure business logic that auto-instrumentation can't capture
-- **Span attributes** make traces searchable and provide debugging context
-- **Trace propagation** automatically links operations across service boundaries
-- **Performance analysis** is straightforward when you can see exact timing breakdowns
+Module 57 covers advanced instrumentation techniques: function-level latency measurement, database query tracing, external API spans, and trace-log-metric correlation for a complete observability solution.
 
-However, there's still room for improvement. In the traces you created, the Celery task spans are children of the Flask API spans, but they're executing in a separate process. This works fine, but what if you want to add even more detail—like custom spans for database queries, external API calls, or nested function calls?
+---
 
-In **Module 57**, you'll dive deeper into advanced instrumentation techniques:
-- Adding custom spans to measure internal function-level latency
-- Instrumenting database queries to see slow queries in traces
-- Tracing external API calls with detailed request/response attributes
-- Using nested spans to create detailed timing hierarchies
-- Measuring query performance and identifying N+1 query problems
+## Additional Resources
 
-You'll also learn how to correlate traces with logs and metrics for a complete observability solution.
+### Official Documentation
+
+- **OpenTelemetry Python SDK**: https://opentelemetry.io/docs/languages/python/
+- **OpenTelemetry Auto-Instrumentation**: https://opentelemetry.io/docs/languages/python/automatic/
+- **Grafana Tempo Documentation**: https://grafana.com/docs/tempo/latest/
+- **TraceQL Query Language**: https://grafana.com/docs/tempo/latest/traceql/
+
+### Specification and Standards
+
+- **OpenTelemetry Specification**: https://opentelemetry.io/docs/specs/otel/
+- **Semantic Conventions**: https://opentelemetry.io/docs/specs/semconv/
+- **OTLP Protocol**: https://opentelemetry.io/docs/specs/otlp/
+
+### Grafana Ecosystem
+
+- **Grafana Documentation**: https://grafana.com/docs/grafana/latest/
+- **Grafana Tempo Configuration**: https://grafana.com/docs/tempo/latest/configuration/
+- **Grafana Datasource Provisioning**: https://grafana.com/docs/grafana/latest/administration/provisioning/#data-sources
