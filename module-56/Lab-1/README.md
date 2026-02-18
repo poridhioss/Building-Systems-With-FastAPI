@@ -382,13 +382,12 @@ Expected output shows three containers: `flask-celery-redis`, `tempo`, and `graf
 
 To access Grafana through Poridhi's Load Balancer, first find your wt0 IP address by running `ifconfig` and looking for the `wt0` interface. Note the IP address (something like `100.125.246.186`).
 
-![alt text](image.png)
+
+![alt text](image-1.png)
 
 **Create Load Balancer:**
 
 Go to Poridhi's Load Balancer dashboard, create a new Load Balancer, use your wt0 IP address with port 3000, and click "Create".
-
-![alt text](image-1.png)
 
 ![alt text](image-2.png)
 
@@ -481,7 +480,16 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME
 
 
+_configured = False
+
 def configure_opentelemetry(service_name: str):
+    global _configured
+
+    # Prevent double-configuration in the same process
+    if _configured:
+        print(f"OpenTelemetry already configured, skipping configuration for: {service_name}")
+        return
+
     # Create a resource identifying this service in traces
     resource = Resource(attributes={
         SERVICE_NAME: service_name
@@ -503,9 +511,12 @@ def configure_opentelemetry(service_name: str):
     # Set as the global tracer provider
     trace.set_tracer_provider(provider)
 
+    _configured = True
     print(f"OpenTelemetry configured for service: {service_name}")
     print(f"Exporting traces to: http://localhost:4318/v1/traces")
 ```
+
+The `_configured` guard prevents double-configuration. This is critical because when `worker.py` imports the Flask app, the app module would otherwise try to reconfigure OpenTelemetry with a different service name, overriding or conflicting with the worker's configuration.
 
 Four components work together in this configuration:
 
@@ -542,11 +553,11 @@ Verify your understanding:
 
 ## Chapter 4: Instrumenting Flask and Celery
 
-OpenTelemetry's auto-instrumentation creates spans automatically for Flask HTTP requests, Redis operations, and Celery task executions. This requires minimal code changes—two instrumentor calls in the Flask app and two in the Celery worker.
+OpenTelemetry's auto-instrumentation creates spans automatically for Flask HTTP requests, Redis operations, and Celery task executions. The key design principle is: **configure OpenTelemetry in the entry point files (`run.py` and `worker.py`), NOT inside the app module**. This ensures each process gets the correct service name.
 
-### 4.1 Instrumenting the Flask Application
+### 4.1 Updating the Flask Application Module
 
-Update `app/__init__.py` to enable auto-instrumentation:
+Update `app/__init__.py` to add instrumentors. **Do NOT call `configure_opentelemetry` here** — that will be done in the entry points:
 
 ```python
 from flask import Flask
@@ -556,10 +567,8 @@ import logging
 
 from opentelemetry.instrumentation.flask import FlaskInstrumentor
 from opentelemetry.instrumentation.redis import RedisInstrumentor
-from otel_config import configure_opentelemetry
 
 
-# NEW: Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s',
@@ -569,9 +578,6 @@ logging.basicConfig(
 def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
-
-    # Configure OpenTelemetry for the Flask service
-    configure_opentelemetry(service_name="flask-api")
 
     # Auto-instrument Flask: creates spans for all HTTP requests
     FlaskInstrumentor().instrument_app(app)
@@ -591,41 +597,93 @@ celery = make_celery(app)
 from app import tasks
 ```
 
-`FlaskInstrumentor` automatically creates a span for every HTTP request, capturing method, path, status code, and duration. `RedisInstrumentor` creates spans for Redis operations showing which commands executed and their latency.
+**Why no `configure_opentelemetry` here?** Because this module is imported by BOTH `run.py` (Flask process) and `worker.py` (Celery process). If `configure_opentelemetry(service_name="flask-api")` were called here, the worker process would also get `flask-api` as its service name — hiding the Celery service in Grafana. By keeping this module free of OpenTelemetry configuration, each entry point controls its own service name.
 
-### 4.2 Instrumenting the Celery Worker
+`FlaskInstrumentor` automatically creates a span for every HTTP request, capturing method, path, status code, and duration. `RedisInstrumentor` creates spans for Redis operations showing which commands executed and their latency. These instrumentors use whatever TracerProvider was set before the import — which is why the entry point must configure OpenTelemetry first.
+
+### 4.2 Creating the Flask Entry Point
+
+Update `run.py` to configure OpenTelemetry BEFORE importing the app:
+
+```python
+from otel_config import configure_opentelemetry
+
+# Configure OpenTelemetry FIRST, before any app imports
+configure_opentelemetry(service_name="flask-api")
+
+from app import app
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=False)
+```
+
+**Critical: The call to `configure_opentelemetry` MUST come before `from app import app`.** When Python executes `from app import app`, it runs all module-level code in `app/__init__.py`, including `FlaskInstrumentor().instrument_app(app)`. The instrumentor attaches to whatever TracerProvider is currently set. If no provider is set yet, the instrumentor uses a no-op provider and **Flask spans are silently discarded** — this is the most common reason for missing Flask traces in Grafana.
+
+**Note:** `debug=False` is used because Flask's debug reloader spawns a child process that can interfere with OpenTelemetry initialization. For development debugging, use print statements or logging instead.
+
+### 4.3 Creating the Celery Worker Entry Point
 
 **Important:** You must create a separate `worker.py` file to properly instrument the Celery worker with the correct service name. Using `celery -A app.celery worker` will use the Flask app's configuration and show the wrong service name.
 
 Create a new file `worker.py` to run the Celery worker with OpenTelemetry:
 
 ```python
-import sys
-from celery import Celery
-from opentelemetry.instrumentation.celery import CeleryInstrumentor
 from otel_config import configure_opentelemetry
+from opentelemetry.instrumentation.celery import CeleryInstrumentor
 
 # Configure OpenTelemetry for the Celery worker service FIRST
-# (before importing anything that might configure it)
+# (before importing anything from the app)
 configure_opentelemetry(service_name="celery-worker")
 
 # Auto-instrument Celery: creates spans for task execution
 CeleryInstrumentor().instrument()
 
-# Import the app and get celery instance after OpenTelemetry setup
+# Import celery instance AFTER OpenTelemetry setup
+# This import triggers app/__init__.py, which calls FlaskInstrumentor
+# and RedisInstrumentor. Since otel_config has _configured=True,
+# the flask-api configuration is skipped.
 from app import celery
 
 if __name__ == '__main__':
-    # Start celery worker with proper arguments
+    # worker_main() starts the worker directly without CLI argument parsing
     celery.worker_main([
         'worker',
         '--loglevel=info'
     ])
 ```
 
-`CeleryInstrumentor` creates spans when tasks execute, capturing task name, arguments, duration, and result status. The key is that this file configures OpenTelemetry with `service_name="celery-worker"` separately from the Flask app.
+`CeleryInstrumentor` creates spans when tasks execute, capturing task name, arguments, duration, and result status.
 
-### 4.3 Prediction Exercise
+**Why `worker_main()` instead of `start()`?** The `celery.start()` method parses command-line arguments and would interpret `worker.py` as a Celery subcommand, causing a "No such command 'worker.py'" error. `worker_main()` starts the worker process directly.
+
+### 4.4 Understanding the Import Order
+
+The import order is critical for correct service naming. Here is what happens in each process:
+
+**Flask process (`python run.py`):**
+
+```
+1. configure_opentelemetry("flask-api")  → Sets TracerProvider with flask-api
+2. from app import app                   → Triggers create_app()
+3.   FlaskInstrumentor().instrument_app() → Attaches to flask-api TracerProvider ✓
+4.   RedisInstrumentor().instrument()     → Attaches to flask-api TracerProvider ✓
+5. app.run()                              → Serves requests, spans go to flask-api ✓
+```
+
+**Celery process (`python worker.py`):**
+
+```
+1. configure_opentelemetry("celery-worker") → Sets TracerProvider with celery-worker
+2. CeleryInstrumentor().instrument()         → Attaches to celery-worker TracerProvider ✓
+3. from app import celery                    → Triggers create_app()
+4.   FlaskInstrumentor().instrument_app()    → Attaches to celery-worker provider (harmless)
+5.   RedisInstrumentor().instrument()        → Attaches to celery-worker provider ✓
+6. celery.worker_main()                      → Processes tasks, spans go to celery-worker ✓
+```
+
+If `configure_opentelemetry` were called inside `create_app()` instead, the worker process would set the TracerProvider to `flask-api` before `worker.py` could set it to `celery-worker`, and all worker spans would be incorrectly labeled.
+
+### 4.5 Prediction Exercise
 
 Two different service names are configured: `flask-api` for the Flask application and `celery-worker` for the Celery worker.
 
@@ -638,12 +696,13 @@ Separate service names allow Grafana to distinguish which process generated each
 
 </details>
 
-### 4.4 Checkpoint
+### 4.6 Checkpoint
 
 Verify your instrumentation:
 
-- [ ] `FlaskInstrumentor` and `RedisInstrumentor` are initialized in `app/__init__.py`
-- [ ] The `worker.py` file is created with `CeleryInstrumentor` initialization
+- [ ] `app/__init__.py` contains `FlaskInstrumentor` and `RedisInstrumentor` but does NOT call `configure_opentelemetry`
+- [ ] `run.py` calls `configure_opentelemetry(service_name="flask-api")` BEFORE `from app import app`
+- [ ] `worker.py` calls `configure_opentelemetry(service_name="celery-worker")` BEFORE `from app import celery`
 - [ ] Flask and Celery use different service names (`flask-api` and `celery-worker`)
 - [ ] The worker is started with `python worker.py`, not `celery -A app.celery worker`
 - [ ] Auto-instrumentation creates spans without modifying business logic code
@@ -672,13 +731,15 @@ source .venv/bin/activate
 python run.py
 ```
 
-The output should include the OpenTelemetry initialization message:
+The output MUST include the OpenTelemetry initialization message:
 
 ```
 OpenTelemetry configured for service: flask-api
 Exporting traces to: http://localhost:4318/v1/traces
- * Running on http://127.0.0.1:5000
+ * Running on http://0.0.0.0:5000
 ```
+
+**If you do NOT see "OpenTelemetry configured for service: flask-api" in this terminal, Flask traces will NOT appear in Grafana.** Go back to Chapter 4.2 and verify that `run.py` calls `configure_opentelemetry` before importing the app.
 
 **Terminal 3 — Celery worker:**
 
@@ -728,13 +789,15 @@ Open Grafana in your browser via the Load Balancer URL.
 
 Navigate to **Explore** (compass icon in the left sidebar) and select **Tempo** as the datasource from the dropdown.
 
-In the query section, click the **Search** tab, then click **Run query** without any filters to display all recent traces.
+In the query section, click the **Search** tab. **Important:** Ensure all filter fields are set to "Select value" (no filters applied), then click **Run query** to display all recent traces.
+
+**Common mistake:** Do NOT set "Span Name" to "celery-worker" or "flask-api" - these are service names, not span names. Applying incorrect filters will hide traces from one of the services.
 
 
 
 Click on a trace entry to open the trace details:
 
-
+**Important:** You should see a SINGLE trace that contains spans from BOTH services (`flask-api` and `celery-worker`). If you only see spans from one service, check your Grafana filters or troubleshooting section.
 
 The trace timeline shows the complete journey of the request:
 
@@ -783,7 +846,8 @@ Verify your tracing pipeline:
 - [ ] Flask shows "OpenTelemetry configured for service: flask-api" on startup
 - [ ] Celery shows "OpenTelemetry configured for service: celery-worker" on startup (not flask-api)
 - [ ] Traces appear in Grafana after sending a request
-- [ ] Trace timelines show both `flask-api` and `celery-worker` spans in different colors
+- [ ] **CRITICAL:** Each individual trace shows BOTH `flask-api` AND `celery-worker` spans within the same trace (not separate traces)
+- [ ] Trace timelines show both services in different colors in a parent-child relationship
 - [ ] Total trace duration is around 5+ seconds (not just milliseconds)
 - [ ] Clicking a span reveals auto-captured attributes (HTTP method, task name, etc.)
 
@@ -941,7 +1005,7 @@ curl -X POST http://localhost:5000/register \
 
 In Grafana, find the new trace. The timeline now shows detailed breakdowns for both services:
 
-![alt text](image-5.png)
+![alt text](image-.png)
 
 ```
 Trace Timeline (Total: ~5700ms)
@@ -1216,6 +1280,30 @@ Open Grafana and verify that traces appear for all three requests, showing span 
 ---
 
 ## Troubleshooting
+
+### Only seeing one service in traces (celery-worker OR flask-api, not both)
+
+**Cause:** Incorrect filters applied in Grafana are hiding spans from one service, or trace context is not propagating correctly between Flask and Celery.
+
+**Solution:**
+
+1. **Check Grafana filters:** In Grafana Explore, ensure ALL filter fields are set to "Select value":
+   - Service Name: "Select value" (or leave empty)
+   - Span Name: "Select value" (NOT "celery-worker" or "flask-api")
+   - Status: "Select value"
+   - Clear any other applied filters
+
+2. **Verify both services are running and configured:**
+   - Flask should log: `OpenTelemetry configured for service: flask-api`
+   - Celery should log: `OpenTelemetry configured for service: celery-worker`
+
+3. **Check trace timeline:** When you click on a trace, you should see BOTH services in the same trace:
+   ```
+   ├─ POST /register [flask-api] ───────────────── 50ms
+   └─ send_welcome_email [celery-worker] ─────── 5000ms
+   ```
+
+4. **Common mistake:** Do not set "Span Name" filter to service names like "celery-worker" - this will hide all spans from other services.
 
 ### No traces appear in Grafana
 
