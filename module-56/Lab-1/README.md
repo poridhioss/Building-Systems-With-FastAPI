@@ -629,20 +629,18 @@ Create a new file `worker.py` to run the Celery worker with OpenTelemetry:
 
 ```python
 from otel_config import configure_opentelemetry
-from opentelemetry.instrumentation.celery import CeleryInstrumentor
 
-# Configure OpenTelemetry for the Celery worker service FIRST
-# (before importing anything from the app)
+# Step 1: Configure OpenTelemetry for the Celery worker service FIRST
 configure_opentelemetry(service_name="celery-worker")
 
-# Auto-instrument Celery: creates spans for task execution
-CeleryInstrumentor().instrument()
-
-# Import celery instance AFTER OpenTelemetry setup
-# This import triggers app/__init__.py, which calls FlaskInstrumentor
-# and RedisInstrumentor. Since otel_config has _configured=True,
-# the flask-api configuration is skipped.
+# Step 2: Import celery instance (this triggers create_app() in app/__init__.py)
 from app import celery
+
+# Step 3: Instrument Celery AFTER the celery app exists
+# CeleryInstrumentor hooks into Celery signals (task_prerun, task_postrun, etc.)
+# These signals must be connected after the celery app is imported.
+from opentelemetry.instrumentation.celery import CeleryInstrumentor
+CeleryInstrumentor().instrument()
 
 if __name__ == '__main__':
     # worker_main() starts the worker directly without CLI argument parsing
@@ -653,6 +651,8 @@ if __name__ == '__main__':
 ```
 
 `CeleryInstrumentor` creates spans when tasks execute, capturing task name, arguments, duration, and result status.
+
+**Critical ordering:** `CeleryInstrumentor().instrument()` MUST be called AFTER `from app import celery`. The instrumentor hooks into Celery's signal system (`task_prerun`, `task_postrun`, `before_task_publish`, etc.). If called before the celery app is imported, the signals are not connected and **task execution spans will not be generated** — you will only see Redis operation spans from the worker.
 
 **Why `worker_main()` instead of `start()`?** The `celery.start()` method parses command-line arguments and would interpret `worker.py` as a Celery subcommand, causing a "No such command 'worker.py'" error. `worker_main()` starts the worker process directly.
 
@@ -674,12 +674,14 @@ The import order is critical for correct service naming. Here is what happens in
 
 ```
 1. configure_opentelemetry("celery-worker") → Sets TracerProvider with celery-worker
-2. CeleryInstrumentor().instrument()         → Attaches to celery-worker TracerProvider ✓
-3. from app import celery                    → Triggers create_app()
-4.   FlaskInstrumentor().instrument_app()    → Attaches to celery-worker provider (harmless)
-5.   RedisInstrumentor().instrument()        → Attaches to celery-worker provider ✓
+2. from app import celery                    → Triggers create_app()
+3.   FlaskInstrumentor().instrument_app()    → Attaches to celery-worker provider (harmless)
+4.   RedisInstrumentor().instrument()        → Attaches to celery-worker provider ✓
+5. CeleryInstrumentor().instrument()         → Hooks into Celery signals ✓
 6. celery.worker_main()                      → Processes tasks, spans go to celery-worker ✓
 ```
+
+**Why CeleryInstrumentor must come AFTER the import:** The instrumentor connects to Celery's task signals (`task_prerun`, `task_postrun`, etc.) to create spans around task execution. If called before the celery app exists, the signals are never connected and task execution spans (like `run/app.tasks.send_welcome_email`) are silently lost — you would only see Redis command spans (PUBLISH, LLEN, SADD) from the worker's internal operations.
 
 If `configure_opentelemetry` were called inside `create_app()` instead, the worker process would set the TracerProvider to `flask-api` before `worker.py` could set it to `celery-worker`, and all worker spans would be incorrectly labeled.
 
@@ -703,6 +705,7 @@ Verify your instrumentation:
 - [ ] `app/__init__.py` contains `FlaskInstrumentor` and `RedisInstrumentor` but does NOT call `configure_opentelemetry`
 - [ ] `run.py` calls `configure_opentelemetry(service_name="flask-api")` BEFORE `from app import app`
 - [ ] `worker.py` calls `configure_opentelemetry(service_name="celery-worker")` BEFORE `from app import celery`
+- [ ] `worker.py` calls `CeleryInstrumentor().instrument()` AFTER `from app import celery` (not before)
 - [ ] Flask and Celery use different service names (`flask-api` and `celery-worker`)
 - [ ] The worker is started with `python worker.py`, not `celery -A app.celery worker`
 - [ ] Auto-instrumentation creates spans without modifying business logic code
@@ -781,7 +784,24 @@ Expected response:
 
 Wait 5 seconds for the `send_welcome_email` task to complete.
 
-### 5.3 Viewing Traces in Grafana
+### 5.3 Understanding Worker Background Traces
+
+Before viewing the registration trace, note that you may already see multiple traces from the `celery-worker` service in Grafana. These include Redis operations like PUBLISH, LLEN, SADD, PING, SREM, and DEL. These are **Celery's internal heartbeat and queue management operations** — they are normal.
+
+The `RedisInstrumentor` captures ALL Redis commands in the worker process, including Celery's internal bookkeeping:
+
+| Redis Command | Purpose |
+|---------------|---------||
+| `PING` | Worker health check / connection keepalive |
+| `PUBLISH` | Celery event broadcast (task-sent, task-succeeded, heartbeat) |
+| `LLEN` | Queue length polling (checks how many tasks are waiting) |
+| `SADD` | Worker registration in Redis |
+| `SREM` | Worker deregistration |
+| `DEL` | Cleanup of processed task results |
+
+These traces appear every few seconds regardless of whether you send requests. To filter them out in Grafana, set **Span Duration > 100ms** to focus on meaningful task execution traces.
+
+### 5.4 Viewing Traces in Grafana
 
 Open Grafana in your browser via the Load Balancer URL.
 
@@ -789,9 +809,11 @@ Open Grafana in your browser via the Load Balancer URL.
 
 Navigate to **Explore** (compass icon in the left sidebar) and select **Tempo** as the datasource from the dropdown.
 
-In the query section, click the **Search** tab. **Important:** Ensure all filter fields are set to "Select value" (no filters applied), then click **Run query** to display all recent traces.
+In the query section, click the **Search** tab. To filter out the noisy Celery heartbeat traces, set **Span Duration > 100ms**, then click **Run query**.
 
-**Common mistake:** Do NOT set "Span Name" to "celery-worker" or "flask-api" - these are service names, not span names. Applying incorrect filters will hide traces from one of the services.
+**Tip:** Without the duration filter, you will see many short-lived Redis traces (PUBLISH, PING, LLEN, SADD) from the Celery worker's internal operations. Setting the duration threshold hides these and shows only meaningful request traces.
+
+**Common mistake:** Do NOT set "Span Name" to "celery-worker" or "flask-api" — these are service names, not span names. Applying incorrect filters will hide traces from one of the services.
 
 
 
@@ -818,7 +840,7 @@ Key observations from this trace:
 3. **Same Trace ID**: Both spans share the same trace ID, linking them together
 4. **Timing breakdown**: Each operation's duration is visible
 
-### 5.4 Inspecting Span Attributes
+### 5.5 Inspecting Span Attributes
 
 Click on individual spans to view their attributes:
 
@@ -839,7 +861,7 @@ The Celery span attributes include:
 
 These attributes are added automatically by the instrumentors—no manual code required.
 
-### 5.5 Checkpoint
+### 5.6 Checkpoint
 
 Verify your tracing pipeline:
 
@@ -1393,6 +1415,27 @@ curl -X POST http://localhost:4318/v1/traces \
 - Confirm both Flask and Celery target the same OTLP endpoint
 - Check Celery worker logs for OpenTelemetry initialization messages
 
+### Worker only shows Redis traces (PUBLISH, LLEN, SADD) but no task execution spans
+
+**Cause:** `CeleryInstrumentor().instrument()` was called BEFORE importing the celery app. The instrumentor hooks into Celery's signal system, but if the celery app doesn't exist yet, the signals are never connected and task execution spans are silently lost.
+
+**Solution:**
+
+Ensure the correct order in `worker.py`:
+
+```python
+# Step 1: Configure OpenTelemetry
+configure_opentelemetry(service_name="celery-worker")
+
+# Step 2: Import app (BEFORE instrumenting Celery)
+from app import celery
+
+# Step 3: Instrument Celery AFTER import
+CeleryInstrumentor().instrument()
+```
+
+If `CeleryInstrumentor().instrument()` appears before `from app import celery`, move it after the import and restart the worker.
+
 ### "Overriding of current TracerProvider is not allowed" warning
 
 **Cause:** OpenTelemetry is being configured multiple times, typically when the Flask app is imported before the Celery worker configures its own OpenTelemetry instance.
@@ -1406,14 +1449,14 @@ Ensure OpenTelemetry is configured for the Celery worker BEFORE importing the Fl
 # 1. Configure OpenTelemetry for celery-worker
 configure_opentelemetry(service_name="celery-worker")
 
-# 2. Instrument Celery
-CeleryInstrumentor().instrument()
-
-# 3. THEN import the Flask app
+# 2. Import the Flask app
 from app import celery
+
+# 3. THEN instrument Celery
+CeleryInstrumentor().instrument()
 ```
 
-If you see both service names ("flask-api" and "celery-worker") in the startup logs, reorder your imports.
+If you see both service names ("flask-api" and "celery-worker") in the startup logs, ensure `otel_config.py` has the `_configured` guard.
 
 ### No such command 'worker.py' error
 
