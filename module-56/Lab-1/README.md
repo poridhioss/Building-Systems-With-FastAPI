@@ -1230,9 +1230,10 @@ Your Flask-Celery application now has a complete distributed tracing pipeline:
 | `docker-compose.yml` | Defines Redis, Tempo, and Grafana services |
 | `tempo-config.yaml` | Configures Tempo's OTLP receiver and storage |
 | `grafana-datasources.yaml` | Auto-provisions Tempo as Grafana's datasource |
-| `otel_config.py` | Centralizes OpenTelemetry configuration |
-| `app/__init__.py` | Instruments Flask and Redis with auto-instrumentors |
-| `worker.py` | Instruments Celery with auto-instrumentor |
+| `otel_config.py` | Centralizes OpenTelemetry configuration with idempotency guard |
+| `run.py` | Flask entry point — configures OTel as `flask-api` before importing app |
+| `worker.py` | Celery entry point — configures OTel as `celery-worker` before importing app |
+| `app/__init__.py` | Flask/Redis auto-instrumentors (NO OTel configuration) |
 | `app/tasks.py` | Custom spans for business logic in Celery tasks |
 | `app/routes.py` | Custom spans for API layer operations |
 
@@ -1281,29 +1282,56 @@ Open Grafana and verify that traces appear for all three requests, showing span 
 
 ## Troubleshooting
 
-### Only seeing one service in traces (celery-worker OR flask-api, not both)
+### Only seeing celery-worker traces (no flask-api spans)
 
-**Cause:** Incorrect filters applied in Grafana are hiding spans from one service, or trace context is not propagating correctly between Flask and Celery.
+**Cause:** This is almost always because `configure_opentelemetry(service_name="flask-api")` was either not called, or was called AFTER the Flask app was already created. The most common mistake is calling `configure_opentelemetry` inside `create_app()` in `app/__init__.py` instead of in `run.py`.
 
 **Solution:**
 
-1. **Check Grafana filters:** In Grafana Explore, ensure ALL filter fields are set to "Select value":
+1. **Check `run.py`:** It MUST call `configure_opentelemetry` BEFORE importing the app:
+   ```python
+   from otel_config import configure_opentelemetry
+   configure_opentelemetry(service_name="flask-api")  # MUST be before next line
+   from app import app
+   ```
+
+2. **Check `app/__init__.py`:** It must NOT call `configure_opentelemetry`. Remove any line like:
+   ```python
+   # REMOVE this line from app/__init__.py
+   configure_opentelemetry(service_name="flask-api")
+   ```
+
+3. **Check Flask terminal output:** You MUST see this line when Flask starts:
+   ```
+   OpenTelemetry configured for service: flask-api
+   ```
+   If you don't see it, `run.py` is not calling `configure_opentelemetry`.
+
+4. **Restart both processes:** After fixing, stop both Flask and the Celery worker, then restart:
+   ```bash
+   # Terminal 2
+   python run.py
+   # Terminal 3
+   python worker.py
+   ```
+
+5. **Send a new request and wait:** After restarting, send a fresh curl request and wait 10 seconds before checking Grafana (BatchSpanProcessor needs time to flush).
+
+### Only seeing one service in traces in Grafana search table
+
+**Cause:** Incorrect filters applied in Grafana are hiding spans from one service, or the Grafana search table only displays the "primary" service for each trace.
+
+**Solution:**
+
+1. **Clear all Grafana filters:** Ensure ALL filter fields are set to "Select value":
    - Service Name: "Select value" (or leave empty)
    - Span Name: "Select value" (NOT "celery-worker" or "flask-api")
    - Status: "Select value"
    - Clear any other applied filters
 
-2. **Verify both services are running and configured:**
-   - Flask should log: `OpenTelemetry configured for service: flask-api`
-   - Celery should log: `OpenTelemetry configured for service: celery-worker`
+2. **Click on the Trace ID link:** The search table may only show one service per row. Click on the blue trace ID link to expand the full trace timeline — both services should appear inside.
 
-3. **Check trace timeline:** When you click on a trace, you should see BOTH services in the same trace:
-   ```
-   ├─ POST /register [flask-api] ───────────────── 50ms
-   └─ send_welcome_email [celery-worker] ─────── 5000ms
-   ```
-
-4. **Common mistake:** Do not set "Span Name" filter to service names like "celery-worker" - this will hide all spans from other services.
+3. **Common mistake:** Do not set "Span Name" filter to service names like "celery-worker" — these are service names, not span names.
 
 ### No traces appear in Grafana
 
@@ -1326,6 +1354,32 @@ curl -X POST http://localhost:4318/v1/traces \
 # Verify Flask logs show OpenTelemetry initialization
 # Expected: "OpenTelemetry configured for service: flask-api"
 ```
+
+### Tempo does not appear as a datasource in Grafana Explore
+
+**Cause:** The `grafana-datasources.yaml` file was not created before the Grafana container was started, so Grafana never provisioned the Tempo datasource.
+
+**Solution:**
+
+1. **Verify the file exists:**
+   ```bash
+   ls grafana-datasources.yaml
+   ```
+   If missing, create it (see Chapter 2.3).
+
+2. **Recreate the Grafana container** so it picks up the provisioning file:
+   ```bash
+   docker compose down
+   docker compose up -d
+   ```
+
+3. **Verify in Grafana:** Go to **Explore** → click the datasource dropdown at the top left. "Tempo" should appear in the list. If Grafana is already open, refresh the browser after recreating containers.
+
+4. **Check Grafana logs** if Tempo still doesn't appear:
+   ```bash
+   docker logs grafana
+   ```
+   Look for provisioning errors or file mount issues.
 
 ### Traces are fragmented (Flask and Celery not linked)
 
