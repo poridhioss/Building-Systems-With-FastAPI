@@ -655,7 +655,8 @@ Confirm you can:
 
 ---
 
-## Chapter 5: Production Security and Deployment
+<!-- ## Chapter 5: Production Security and Deployment -->
+## Chapter 5: Production Security
 
 Configure authentication and reverse proxy setup for production Flower deployments.
 
@@ -697,7 +698,7 @@ This configuration allows both `admin:adminpass` and `developer:devpass` credent
 
 **Important:** Basic authentication transmits credentials in base64 encoding, which is easily decoded. Never use basic authentication over unencrypted HTTP in production. Always use HTTPS (TLS/SSL).
 
-### 5.3 Deploy Behind Nginx Reverse Proxy
+<!-- ### 5.3 Deploy Behind Nginx Reverse Proxy
 
 Production deployments should place Flower behind a reverse proxy like Nginx. This provides:
 
@@ -762,9 +763,9 @@ sudo apt install certbot python3-certbot-nginx -y
 sudo certbot --nginx -d flower.yourcompany.com
 ```
 
-Certbot automatically configures Nginx with SSL and redirects HTTP to HTTPS.
+Certbot automatically configures Nginx with SSL and redirects HTTP to HTTPS. -->
 
-### 5.4 Create a Startup Script
+### 5.3 Create a Startup Script
 
 For operational convenience, create a shell script that launches Flower with standard configuration.
 
@@ -801,18 +802,18 @@ Launch Flower:
 
 This script encapsulates your standard configuration in a single command.
 
-### 5.5 Checkpoint
+### 5.4 Checkpoint
 
 Verify production readiness:
 
 - [ ] Flower requires authentication (username/password)
 - [ ] You understand that basic auth over HTTP is insecure
-- [ ] You can configure Nginx as a reverse proxy
+<!-- - [ ] You can configure Nginx as a reverse proxy -->
 - [ ] You have a startup script for consistent Flower launches
 
 ---
 
-## Chapter 6: Filtering, Searching, and Task History
+<!-- ## Chapter 6: Filtering, Searching, and Task History
 
 Use Flower's search and filter capabilities to find specific tasks in large task histories.
 
@@ -849,8 +850,6 @@ These commands create a mix of successful, failed, and retried tasks.
 ### 6.2 Filter by Task State
 
 In Flower, navigate to the **Tasks** tab. The page displays all tasks with a filter bar at the top.
-
-![Task Filters](images/./images/image-7.png)
 
 Click the filter options:
 
@@ -894,7 +893,7 @@ Confirm you can:
 - [ ] Search for tasks by argument values
 - [ ] Search for tasks by task ID
 
----
+--- -->
 
 ## Epilogue: The Complete Monitoring System
 
