@@ -4,95 +4,7 @@
 
 This lab teaches you to implement real-time monitoring for Celery task queues using Flower, a web-based dashboard that provides visibility into task execution, worker health, and queue backlogs. Building on the production-ready task queue from Module 54, you will install Flower, configure it to monitor your existing Flask-Celery infrastructure, and use its interface to observe task state transitions, inspect failure tracebacks, and identify performance bottlenecks. By the end of this lab, you will have operational monitoring that transforms your task queue from an opaque background process into a transparent, debuggable system.
 
-```mermaid
-graph TB
-    subgraph Client["Client (curl / browser)"]
-        C1["HTTP Requests"]
-    end
-
-    subgraph FlaskApp["Flask Application :5000"]
-        FA["POST /register"]
-        FB["POST /reports"]
-        FC["GET /tasks/:id"]
-    end
-
-    subgraph Flower["Flower Dashboard :5555"]
-        FD["Tasks Page"]
-        FE["Workers Page"]
-        FF["Broker Page"]
-    end
-
-    subgraph Redis["Redis :6379"]
-        R1["DB 0 — Broker\n(Task Queue)"]
-        R2["DB 1 — Result Backend\n(Task States & Results)"]
-    end
-
-    subgraph Worker["Celery Worker"]
-        W1["Execute Tasks"]
-        W2["Handle Retries"]
-        W3["Enforce Timeouts"]
-    end
-
-    C1 -->|"Trigger tasks"| FlaskApp
-    C1 -->|"Monitor tasks"| Flower
-    FlaskApp -->|"Queue task"| R1
-    Flower -->|"Read task data"| R1
-    Flower -->|"Read results"| R2
-    R1 -->|"Poll for tasks"| Worker
-    Worker -->|"Write results"| R2
-
-    style Client fill:#f5f5f5,stroke:#333
-    style FlaskApp fill:#e3f2fd,stroke:#1565c0
-    style Flower fill:#fff3e0,stroke:#e65100
-    style Redis fill:#fce4ec,stroke:#c62828
-    style Worker fill:#e8f5e9,stroke:#2e7d32
-```
-
-## Architecture Diagram
-
-Flower sits alongside your existing Flask-Celery infrastructure and reads data from the Redis broker and result backend:
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Client (curl/browser)                    │
-└────────┬───────────────────────────────────────┬────────────────┘
-         │                                       │
-         │ HTTP POST /register                   │ HTTP GET :5555
-         │ (Trigger tasks)                       │ (Monitor tasks)
-         ▼                                       ▼
-┌──────────────────────┐              ┌─────────────────────────┐
-│   Flask Application  │              │   Flower Dashboard      │
-│   (Port 5000)        │              │   (Port 5555)           │
-│                      │              │                         │
-│  - POST /register    │              │  - Tasks page           │
-│  - POST /reports     │              │  - Workers page         │
-│  - GET /tasks/:id    │              │  - Monitor page         │
-└──────────┬───────────┘              └────────┬────────────────┘
-           │                                   │
-           │ Queue task                        │ Read task data
-           │                                   │ Read worker data
-           ▼                                   ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Redis (Port 6379)                          │
-│  ┌────────────────────────┐  ┌────────────────────────────┐    │
-│  │  Database 0 (Broker)   │  │  Database 1 (Result Backend)│   │
-│  │  - Task queue          │  │  - Task states             │    │
-│  │  - Pending tasks       │  │  - Task results            │    │
-│  └────────────────────────┘  └────────────────────────────┘    │
-└────────────┬────────────────────────────────────────────────────┘
-             │
-             │ Poll for tasks
-             │ Write results
-             ▼
-┌─────────────────────────┐
-│   Celery Worker         │
-│   (Background Process)  │
-│                         │
-│  - Executes tasks       │
-│  - Handles retries      │
-│  - Enforces timeouts    │
-└─────────────────────────┘
-```
+![alt text](images/archi-diagrams/mod-55_high-level.drawio.svg)
 
 **Key Points:**
 - **Flask API** and **Flower** are separate processes that both connect to Redis
@@ -202,72 +114,11 @@ Flower solves this by providing a web-based dashboard that reads from your Redis
 
 </details>
 
-### 1.3 Flower's Architecture
+### 1.3 Flower's architecture flow
 
 Flower connects to the same Redis instance your Flask application and Celery workers use:
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Flask as Flask API :5000
-    participant Redis as Redis :6379
-    participant Worker as Celery Worker
-    participant Flower as Flower :5555
-
-    Client->>Flask: POST /register (trigger task)
-    Flask->>Redis: Queue task in DB 0 (Broker)
-    Flask-->>Client: Return task_id
-
-    Worker->>Redis: Poll for tasks from DB 0
-    Redis-->>Worker: Deliver task
-    Worker->>Worker: Execute task
-    Worker->>Redis: Write result to DB 1 (Backend)
-
-    Client->>Flower: GET :5555 (view dashboard)
-    Flower->>Redis: Read task states from DB 0 & DB 1
-    Redis-->>Flower: Task data, worker info
-    Flower-->>Client: Display real-time dashboard
-```
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Client (curl/browser)                    │
-└────────┬───────────────────────────────────────┬────────────────┘
-         │                                       │
-         │ HTTP POST /register                   │ HTTP GET :5555
-         │ (Trigger tasks)                       │ (Monitor tasks)
-         ▼                                       ▼
-┌──────────────────────┐              ┌─────────────────────────┐
-│   Flask Application  │              │   Flower Dashboard      │
-│   (Port 5000)        │              │   (Port 5555)           │
-│                      │              │                         │
-│  - POST /register    │              │  - Tasks page           │
-│  - POST /reports     │              │  - Workers page         │
-│  - GET /tasks/:id    │              │  - Monitor page         │
-└──────────┬───────────┘              └────────┬────────────────┘
-           │                                   │
-           │ Queue task                        │ Read task data
-           ▼                                   ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Redis (Port 6379)                          │
-│  ┌────────────────────────┐  ┌────────────────────────────┐    │
-│  │  Database 0 (Broker)   │  │  Database 1 (Result Backend)│   │
-│  │  - Task queue          │  │  - Task states             │    │
-│  │  - Pending tasks       │  │  - Task results            │    │
-│  └────────────────────────┘  └────────────────────────────┘    │
-└────────────┬────────────────────────────────────────────────────┘
-             │
-             │ Poll for tasks
-             ▼
-┌─────────────────────────┐
-│   Celery Worker         │
-│   (Background Process)  │
-│                         │
-│  - Executes tasks       │
-│  - Handles retries      │
-│  - Enforces timeouts    │
-└─────────────────────────┘
-```
+![alt text](images/archi-diagrams/mod-55_sequence-flow.drawio.svg)
 
 Flower runs as a separate process alongside Flask and Celery. When you trigger a task via the Flask API, Flask queues it in Redis. The Celery worker polls Redis, executes the task, and writes the result back to Redis. Flower continuously polls Redis to display this activity in its web interface.
 
@@ -378,29 +229,6 @@ pip install flower==2.0.1
 
 Flower is a web application built with Tornado that provides monitoring and administration capabilities for Celery. It reads task states from the result backend and worker information from the broker.
 
-Update `requirements.txt` to include Flower. Complete the missing entry:
-
-```txt
-flask==3.0.0
-celery==5.3.4
-redis==5.0.1
-___==2.0.1  # Q1: What package provides Celery monitoring?
-```
-
-<details>
-<summary>Click to see answer</summary>
-
-```txt
-flask==3.0.0
-celery==5.3.4
-redis==5.0.1
-flower==2.0.1
-```
-
-**Answer:** `flower` — the real-time web-based monitoring tool for Celery.
-
-</details>
-
 Add it to your requirements file:
 
 ```bash
@@ -411,19 +239,7 @@ echo "flower==2.0.1" >> requirements.txt
 
 Before launching Flower, ensure your Flask-Celery infrastructure from Module 54 is running. You will need multiple terminal sessions.
 
-```mermaid
-graph LR
-    T1["Terminal 1\nRedis (Docker)"] --> T2["Terminal 2\nCelery Worker"]
-    T2 --> T3["Terminal 3\nFlask App"]
-    T3 --> T4["Terminal 4\nFlower"]
-    T4 --> T5["Terminal 5\nTesting (curl)"]
-
-    style T1 fill:#fce4ec,stroke:#c62828
-    style T2 fill:#e8f5e9,stroke:#2e7d32
-    style T3 fill:#e3f2fd,stroke:#1565c0
-    style T4 fill:#fff3e0,stroke:#e65100
-    style T5 fill:#f3e5f5,stroke:#6a1b9a
-```
+![alt text](images/archi-diagrams/mod-55_active-terminals.drawio.svg)
 
 **Terminal 1: Start Redis**
 
@@ -726,46 +542,7 @@ Flower displays tasks in six possible states. Complete the table:
 
 Common state transition patterns:
 
-```mermaid
-graph LR
-    subgraph Success["Successful Task"]
-        S1[PENDING] --> S2[STARTED] --> S3[SUCCESS]
-    end
-
-    style S1 fill:#fff9c4,stroke:#f9a825
-    style S2 fill:#bbdefb,stroke:#1565c0
-    style S3 fill:#c8e6c9,stroke:#2e7d32
-```
-
-```mermaid
-graph LR
-    subgraph Retry["Task with Retries (Eventually Succeeds)"]
-        R1[PENDING] --> R2[STARTED] --> R3[RETRY]
-        R3 --> R4[PENDING] --> R5[STARTED] --> R6[SUCCESS]
-    end
-
-    style R1 fill:#fff9c4,stroke:#f9a825
-    style R2 fill:#bbdefb,stroke:#1565c0
-    style R3 fill:#ffe0b2,stroke:#e65100
-    style R4 fill:#fff9c4,stroke:#f9a825
-    style R5 fill:#bbdefb,stroke:#1565c0
-    style R6 fill:#c8e6c9,stroke:#2e7d32
-```
-
-```mermaid
-graph LR
-    subgraph Exhaust["Task That Exhausts Retries"]
-        E1[PENDING] --> E2[STARTED] --> E3[RETRY]
-        E3 --> E4[PENDING] --> E5[STARTED] --> E6[FAILURE]
-    end
-
-    style E1 fill:#fff9c4,stroke:#f9a825
-    style E2 fill:#bbdefb,stroke:#1565c0
-    style E3 fill:#ffe0b2,stroke:#e65100
-    style E4 fill:#fff9c4,stroke:#f9a825
-    style E5 fill:#bbdefb,stroke:#1565c0
-    style E6 fill:#ffcdd2,stroke:#c62828
-```
+![alt text](images/archi-diagrams/mod-55_task-state-pattern.drawio.svg)
 
 Understanding these patterns helps you diagnose task failures quickly during production incidents.
 
@@ -859,20 +636,7 @@ Refresh the Flower Workers page. The worker status returns to "Online".
 
 Queue backlogs occur when tasks are submitted faster than workers can process them. This leads to increased latency and eventual timeout failures. Flower can identify backlogs before they cause user-visible problems.
 
-```mermaid
-graph TD
-    A["Worker STOPPED\n(Ctrl+C)"] --> B["20 tasks queued via Flask API"]
-    B --> C["Redis broker accumulates messages"]
-    C --> D["Flower Broker tab shows\nMessages in Queue: 20"]
-    D --> E["Worker RESTARTED"]
-    E --> F["Worker drains the queue"]
-    F --> G["Flower Broker tab shows\nMessages in Queue: 0"]
-
-    style A fill:#ffcdd2,stroke:#c62828
-    style D fill:#fff3e0,stroke:#e65100
-    style E fill:#c8e6c9,stroke:#2e7d32
-    style G fill:#c8e6c9,stroke:#2e7d32
-```
+![alt text](images/archi-diagrams/mod-55_queue-montoring.drawio.svg)
 
 Stop your Celery worker (Terminal 2: `Ctrl+C`).
 
@@ -1256,29 +1020,6 @@ Confirm you can:
 
 You have implemented real-time monitoring for your Flask-Celery task queue. Your system now provides visibility into task execution, worker health, and queue backlogs.
 
-```mermaid
-graph TB
-    subgraph Monitoring["Complete Monitoring System"]
-        direction TB
-        A["Task Execution\nPENDING - STARTED - SUCCESS/FAILURE/RETRY"]
-        B["Task Details\nArguments, Results, Tracebacks, Duration"]
-        C["Worker Health\nActive Count, Concurrency, Processed Tasks"]
-        D["Queue Performance\nPending Count, Backlog Detection"]
-        E["Search & Filter\nBy State, Name, Arguments, Task ID"]
-        F["Security\nBasic Auth, Persistent History"]
-    end
-
-    G["Flower Dashboard :5555"] --> A
-    G --> B
-    G --> C
-    G --> D
-    G --> E
-    G --> F
-
-    style G fill:#fff3e0,stroke:#e65100
-    style Monitoring fill:#f5f5f5,stroke:#333
-```
-
 ### Monitoring Capabilities
 
 | Metric | Flower provides |
@@ -1434,31 +1175,6 @@ CELERY_RESULT_EXPIRES = 3600 * 48  # 48 hours
 
 For critical tasks, consider using a permanent database backend (PostgreSQL, MySQL) instead of Redis.
 
-### Cannot access Flower from remote machine
-
-**Symptoms:** Flower loads at `http://localhost:5555` but not at `http://your-server-ip:5555`.
-
-**Diagnosis:**
-
-1. Verify Flower binds to all interfaces: By default, Flower may bind only to localhost.
-2. Check firewall rules: The server firewall may block port 5555.
-
-**Resolution:**
-
-Launch Flower with explicit address binding:
-
-```bash
-celery -A app.celery flower --address=0.0.0.0 --port=5555
-```
-
-Configure firewall to allow port 5555:
-
-```bash
-sudo ufw allow 5555
-```
-
-For production, use a reverse proxy instead of exposing Flower directly.
-
 ---
 
 ## Next Steps
@@ -1487,7 +1203,6 @@ Module 56 introduces distributed tracing with Grafana Tempo and OpenTelemetry. Y
 ### Production Best Practices
 
 - **Flower Security**: https://flower.readthedocs.io/en/latest/auth.html
-- **Celery Deployment**: https://docs.celeryproject.org/en/stable/userguide/deployment.html
 - **Nginx Reverse Proxy Configuration**: https://docs.nginx.com/nginx/admin-guide/web-server/reverse-proxy/
 
 ### Alternative Monitoring Tools
