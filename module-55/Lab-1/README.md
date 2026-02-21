@@ -4,6 +4,50 @@
 
 This lab teaches you to implement real-time monitoring for Celery task queues using Flower, a web-based dashboard that provides visibility into task execution, worker health, and queue backlogs. Building on the production-ready task queue from Module 54, you will install Flower, configure it to monitor your existing Flask-Celery infrastructure, and use its interface to observe task state transitions, inspect failure tracebacks, and identify performance bottlenecks. By the end of this lab, you will have operational monitoring that transforms your task queue from an opaque background process into a transparent, debuggable system.
 
+```mermaid
+graph TB
+    subgraph Client["Client (curl / browser)"]
+        C1["HTTP Requests"]
+    end
+
+    subgraph FlaskApp["Flask Application :5000"]
+        FA["POST /register"]
+        FB["POST /reports"]
+        FC["GET /tasks/:id"]
+    end
+
+    subgraph Flower["Flower Dashboard :5555"]
+        FD["Tasks Page"]
+        FE["Workers Page"]
+        FF["Broker Page"]
+    end
+
+    subgraph Redis["Redis :6379"]
+        R1["DB 0 — Broker\n(Task Queue)"]
+        R2["DB 1 — Result Backend\n(Task States & Results)"]
+    end
+
+    subgraph Worker["Celery Worker"]
+        W1["Execute Tasks"]
+        W2["Handle Retries"]
+        W3["Enforce Timeouts"]
+    end
+
+    C1 -->|"Trigger tasks"| FlaskApp
+    C1 -->|"Monitor tasks"| Flower
+    FlaskApp -->|"Queue task"| R1
+    Flower -->|"Read task data"| R1
+    Flower -->|"Read results"| R2
+    R1 -->|"Poll for tasks"| Worker
+    Worker -->|"Write results"| R2
+
+    style Client fill:#f5f5f5,stroke:#333
+    style FlaskApp fill:#e3f2fd,stroke:#1565c0
+    style Flower fill:#fff3e0,stroke:#e65100
+    style Redis fill:#fce4ec,stroke:#c62828
+    style Worker fill:#e8f5e9,stroke:#2e7d32
+```
+
 ## Architecture Diagram
 
 Flower sits alongside your existing Flask-Celery infrastructure and reads data from the Redis broker and result backend:
@@ -53,7 +97,7 @@ Flower sits alongside your existing Flask-Celery infrastructure and reads data f
 **Key Points:**
 - **Flask API** and **Flower** are separate processes that both connect to Redis
 - **Flower** reads from the broker (to see queued tasks) and the result backend (to see task states/results)
-- **Flower** does NOT execute tasks—it's purely a monitoring/inspection tool
+- **Flower** does NOT execute tasks — it is purely a monitoring/inspection tool
 - Clients can trigger tasks via Flask and immediately switch to Flower to watch them execute
 
 ## Learning Objectives
@@ -68,13 +112,12 @@ By the end of this lab, you will be able to:
 6. Filter and search task histories to isolate specific executions
 7. Identify queue backlogs by monitoring pending task counts
 8. Secure the Flower dashboard with authentication mechanisms
-9. Deploy Flower behind a reverse proxy for production environments
 
 **Prerequisites:** Completion of Module 54 Lab 1 with a working Flask-Celery application including retry logic, timeout enforcement, and error handling. You must have Redis configured as both broker and result backend, with tasks `send_welcome_email`, `generate_monthly_report`, `flaky_task`, and `slow_task` defined.
 
 ## Prologue: The Challenge
 
-You join a platform engineering team at a fast-growing e-commerce company. The Flask-Celery task queue processes thousands of background jobs daily: order confirmations, inventory updates, recommendation engine calculations, and fraud detection analyses. The system includes retry logic, timeout enforcement, and comprehensive error handling—everything the Module 54 lab taught you to implement.
+You join a platform engineering team at a fast-growing e-commerce company. The Flask-Celery task queue processes thousands of background jobs daily: order confirmations, inventory updates, recommendation engine calculations, and fraud detection analyses. The system includes retry logic, timeout enforcement, and comprehensive error handling — everything the Module 54 lab taught you to implement.
 
 On Monday morning, the customer support team reports that confirmation emails stopped arriving over the weekend. The on-call engineer checks the Celery worker logs but sees thousands of lines scrolling by. Searching for errors manually takes 20 minutes. By then, 50 customers have called support.
 
@@ -88,8 +131,7 @@ You will install Flower, connect it to your existing infrastructure, and transfo
 
 ## Environment Setup
 
-This lab extends the Module 54 project on a fresh virtual machine. You will recreate the Flask-Celery infrastructure from Module 54,then add Flower as a monitoring layer.
-
+This lab extends the Module 54 project on a fresh virtual machine. You will recreate the Flask-Celery infrastructure from Module 54, then add Flower as a monitoring layer.
 
 Check Python version:
 
@@ -140,11 +182,52 @@ Before installing monitoring tools, you must understand what Flower provides and
 
 Production task queues present a visibility challenge. When a Celery worker processes tasks in the background, you cannot see execution in real-time. Questions like "Which tasks are currently running?", "Why did this task fail?", and "Are tasks backing up?" require manual log parsing or custom Redis queries. This workflow is inefficient during incidents when seconds matter.
 
-Flower solves this by providing a web-based dashboard that reads from your Redis broker and result backend. It displays task states, worker health, queue lengths, and exception tracebacks—all in real-time. Flower does not execute tasks. It observes and reports.
+Flower solves this by providing a web-based dashboard that reads from your Redis broker and result backend. It displays task states, worker health, queue lengths, and exception tracebacks — all in real-time. Flower does not execute tasks. It observes and reports.
 
-### 1.2 Flower's Architecture
+### 1.2 Think First: Monitoring Architecture
+
+**Question 1:** Flower connects to the same Redis instance as your Flask app and Celery worker. Why is it important that Flower reads from Redis rather than directly from the Celery worker process?
+
+**Question 2:** If Flower crashes, does task execution stop? Why or why not?
+
+<details>
+<summary>Click to review answers</summary>
+
+**Answer 1:** Reading from Redis decouples monitoring from execution. Flower does not need a direct connection to worker processes, which means:
+- Workers are not affected by monitoring overhead
+- Flower can restart without disrupting task processing
+- Multiple Flower instances can monitor the same infrastructure
+
+**Answer 2:** No. Flower is a read-only observer. It does not participate in task execution, queuing, or result storage. If Flower crashes, Flask continues queuing tasks, workers continue processing them, and Redis continues storing results. You lose visibility, but not functionality.
+
+</details>
+
+### 1.3 Flower's Architecture
 
 Flower connects to the same Redis instance your Flask application and Celery workers use:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Flask as Flask API :5000
+    participant Redis as Redis :6379
+    participant Worker as Celery Worker
+    participant Flower as Flower :5555
+
+    Client->>Flask: POST /register (trigger task)
+    Flask->>Redis: Queue task in DB 0 (Broker)
+    Flask-->>Client: Return task_id
+
+    Worker->>Redis: Poll for tasks from DB 0
+    Redis-->>Worker: Deliver task
+    Worker->>Worker: Execute task
+    Worker->>Redis: Write result to DB 1 (Backend)
+
+    Client->>Flower: GET :5555 (view dashboard)
+    Flower->>Redis: Read task states from DB 0 & DB 1
+    Redis-->>Flower: Task data, worker info
+    Flower-->>Client: Display real-time dashboard
+```
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -188,7 +271,7 @@ Flower connects to the same Redis instance your Flask application and Celery wor
 
 Flower runs as a separate process alongside Flask and Celery. When you trigger a task via the Flask API, Flask queues it in Redis. The Celery worker polls Redis, executes the task, and writes the result back to Redis. Flower continuously polls Redis to display this activity in its web interface.
 
-### 1.3 What Flower Monitors
+### 1.4 What Flower Monitors
 
 Flower tracks four primary categories of data:
 
@@ -197,9 +280,34 @@ Flower tracks four primary categories of data:
 3. **Worker Health**: Active worker count, concurrency settings, total tasks processed, worker uptime
 4. **Queue Metrics**: Number of queued tasks (backlog), tasks per second rate, broker connection status
 
-These metrics answer the operational questions that log files cannot surface quickly.
+Match each Flower monitoring category to the production question it answers:
 
-### 1.4 Prediction Exercise
+| Production Question | Category (A-D) |
+|---------------------|-----------------|
+| "Why did the welcome email fail?" | ___ |
+| "Is the task queue backing up?" | ___ |
+| "How many workers are currently active?" | ___ |
+| "Is the flaky_task still retrying?" | ___ |
+
+**Options:**
+- A: Task States
+- B: Task Details
+- C: Worker Health
+- D: Queue Metrics
+
+<details>
+<summary>Click to check your answers</summary>
+
+| Production Question | Category |
+|---------------------|----------|
+| "Why did the welcome email fail?" | B: Task Details (exception traceback) |
+| "Is the task queue backing up?" | D: Queue Metrics (pending task count) |
+| "How many workers are currently active?" | C: Worker Health (active worker count) |
+| "Is the flaky_task still retrying?" | A: Task States (RETRY state) |
+
+</details>
+
+### 1.5 Prediction Exercise
 
 Before proceeding, consider this scenario:
 
@@ -208,7 +316,7 @@ A task fails with a transient network error. Celery retries it automatically usi
 **Question:** What sequence of states will Flower display for this task? Write down your prediction.
 
 <details>
-<summary>Reveal Answer</summary>
+<summary>Click to review answer</summary>
 
 The task will transition through these states:
 
@@ -226,7 +334,7 @@ Flower displays the full history, including retry count and the exceptions from 
 
 </details>
 
-### 1.5 Checkpoint
+### 1.6 Checkpoint
 
 Verify your understanding before proceeding:
 
@@ -234,6 +342,7 @@ Verify your understanding before proceeding:
 - [ ] Flower runs as a separate process from Flask and Celery
 - [ ] Task states include PENDING, STARTED, SUCCESS, FAILURE, and RETRY
 - [ ] Flower can display exception tracebacks without parsing log files
+- [ ] Flower crashing does not affect task execution
 
 ---
 
@@ -241,7 +350,18 @@ Verify your understanding before proceeding:
 
 Install Flower and configure it to monitor your Module 54 infrastructure.
 
-### 2.1 Install Flower Package
+### 2.1 Think First: Flower's Dependencies
+
+**Question:** Flower needs to know which Celery application to monitor and where the broker is located. How does it discover this information?
+
+<details>
+<summary>Click to review answer</summary>
+
+Flower uses the `-A` (or `--app`) parameter to import the Celery application instance. This instance already contains the broker URL and result backend URL from your Flask configuration. Flower reads these settings from the Celery app object, so it automatically connects to the same Redis instance your workers use.
+
+</details>
+
+### 2.2 Install Flower Package
 
 Navigate to your project directory and activate the virtual environment:
 
@@ -258,13 +378,17 @@ pip install flower==2.0.1
 
 Flower is a web application built with Tornado that provides monitoring and administration capabilities for Celery. It reads task states from the result backend and worker information from the broker.
 
-Update `requirements.txt` to include Flower:
+Update `requirements.txt` to include Flower. Complete the missing entry:
 
-```bash
-echo "flower==2.0.1" >> requirements.txt
+```txt
+flask==3.0.0
+celery==5.3.4
+redis==5.0.1
+___==2.0.1  # Q1: What package provides Celery monitoring?
 ```
 
-Your `requirements.txt` should now contain:
+<details>
+<summary>Click to see answer</summary>
 
 ```txt
 flask==3.0.0
@@ -273,9 +397,33 @@ redis==5.0.1
 flower==2.0.1
 ```
 
-### 2.2 Start Infrastructure Components
+**Answer:** `flower` — the real-time web-based monitoring tool for Celery.
+
+</details>
+
+Add it to your requirements file:
+
+```bash
+echo "flower==2.0.1" >> requirements.txt
+```
+
+### 2.3 Start Infrastructure Components
 
 Before launching Flower, ensure your Flask-Celery infrastructure from Module 54 is running. You will need multiple terminal sessions.
+
+```mermaid
+graph LR
+    T1["Terminal 1\nRedis (Docker)"] --> T2["Terminal 2\nCelery Worker"]
+    T2 --> T3["Terminal 3\nFlask App"]
+    T3 --> T4["Terminal 4\nFlower"]
+    T4 --> T5["Terminal 5\nTesting (curl)"]
+
+    style T1 fill:#fce4ec,stroke:#c62828
+    style T2 fill:#e8f5e9,stroke:#2e7d32
+    style T3 fill:#e3f2fd,stroke:#1565c0
+    style T4 fill:#fff3e0,stroke:#e65100
+    style T5 fill:#f3e5f5,stroke:#6a1b9a
+```
 
 **Terminal 1: Start Redis**
 
@@ -316,17 +464,32 @@ The Flask application should start on `http://127.0.0.1:5000`.
 
 If all three components are running, your infrastructure is ready for monitoring.
 
-### 2.3 Launch Flower Dashboard
+### 2.4 Launch Flower Dashboard
 
-Open a fourth terminal and launch Flower:
+Open a fourth terminal and launch Flower. Complete the command below:
 
 ```bash
 cd flask-celery-app
 source .venv/bin/activate
+celery -A ___ flower --port=___  # Q1: Which Celery app? Q2: Which port?
+```
+
+**Hints:**
+- The `-A` parameter must match the Celery app used by the worker
+- Port 5555 is the conventional Flower port
+
+<details>
+<summary>Click to see the complete command</summary>
+
+```bash
 celery -A app.celery flower --port=5555
 ```
 
-The `-A app.celery` parameter tells Flower which Celery application instance to monitor. The `--port=5555` parameter specifies the web interface port. Port 5555 is the conventional Flower port.
+**Answers:**
+- Q1: `app.celery` — the same Celery application instance the worker uses
+- Q2: `5555` — the standard Flower dashboard port
+
+</details>
 
 Expected output:
 
@@ -334,7 +497,7 @@ Expected output:
 
 Leave this terminal open. Flower must remain running to provide real-time monitoring.
 
-### 2.4: Access Flower using Poridhi's Load Balancer
+### 2.5: Access Flower using Poridhi's Load Balancer
 
 To access the Flower with Poridhi's Load Balancer, first find your wt0 IP address by running `ifconfig` and looking for the `wt0` interface. Note the IP address (something like `100.125.246.186`).
 
@@ -346,14 +509,14 @@ Go to Poridhi's Load Balancer dashboard, create a new Load Balancer, use your wt
 
 ![alt text](./images/image-3.png)
 
-You'll receive a public URL like `https://lb-xxxxx.poridhi.io` that you can use to access Flower from anywhere.
+You will receive a public URL like `https://lb-xxxxx.poridhi.io` that you can use to access Flower from anywhere.
 
-### 2.4 Access the Flower Web Interface from your local pc
+### 2.6 Access the Flower Web Interface
 
 Open a web browser and navigate to:
 
 ```
-`https://lb-xxxxx.poridhi.io`
+https://lb-xxxxx.poridhi.io
 ```
 
 The Flower homepage displays:
@@ -362,27 +525,46 @@ The Flower homepage displays:
 
 The Tasks page will initially be empty because no tasks have executed since Flower started.
 
-### 2.5 Checkpoint
+### 2.7 Checkpoint
 
 Before triggering tasks, verify:
 
 - [ ] Four terminals are running: Redis (docker), Celery worker, Flask app, Flower
 - [ ] Flower web interface loads at `https://lb-xxxxx.poridhi.io`
 - [ ] Flask API responds to HTTP requests
+- [ ] You can explain what the `-A app.celery` parameter does
 
 ---
 
 ## Chapter 3: Monitoring Task Execution
 
-Trigger tasks and observe their execution through the Flower interface.
+The core value of Flower becomes apparent when tasks execute. This chapter demonstrates how to trigger different task types and observe their behavior through the Flower interface.
 
-### 3.1 Monitor a Successful Task
+### 3.1 Think First: Task Visibility
+
+**Question:** You trigger `send_welcome_email` via the Flask API. The API returns a task ID immediately. Without Flower, how would you determine whether the task succeeded or failed?
+
+<details>
+<summary>Click to review answer</summary>
+
+Without Flower, you would need to:
+1. Check the Celery worker terminal logs, scrolling through potentially thousands of lines
+2. Query the Redis result backend directly using `redis-cli`
+3. Use the Flask `/tasks/<id>` endpoint (if one exists) to poll for task status
+
+Each approach is manual and slow during incidents. Flower eliminates this friction by displaying task states in real-time.
+
+</details>
+
+### 3.2 Monitor a Successful Task
 
 Open a fifth terminal for triggering tasks:
 
 ```bash
 cd flask-celery-app
 ```
+
+**Predict:** Before running the command below, what JSON response do you expect from the Flask API? What state sequence will Flower display?
 
 Trigger the `send_welcome_email` task by registering a user:
 
@@ -392,6 +574,9 @@ curl -X POST http://localhost:5000/register \
   -d '{"email": "alice@example.com"}'
 ```
 
+<details>
+<summary>Click to verify</summary>
+
 The Flask API returns immediately with a task ID:
 
 ```json
@@ -400,6 +585,8 @@ The Flask API returns immediately with a task ID:
   "task_id": "a1b2c3d4-5678-90ef-ghij-klmnopqrstuv"
 }
 ```
+
+</details>
 
 Switch to the Flower browser tab. Click the **Tasks** navigation item.
 
@@ -440,7 +627,7 @@ The detail view includes:
 
 This level of detail eliminates the need to search worker logs when debugging task behavior.
 
-### 3.2 Monitor a Task with Retries
+### 3.3 Monitor a Task with Retries
 
 The `flaky_task` from Module 54 randomly fails 70% of the time to demonstrate retry behavior. Trigger it:
 
@@ -450,15 +637,15 @@ curl -X POST http://localhost:5000/test-reliability \
   -d '{"task_number": 1}'
 ```
 
-Now check flower:
+Now check Flower:
 
 ![alt text](./images/image-7.png)
 
 The timeline shows when tasks start and when they complete. For the flaky task, you might observe:
 
-1. Task starts 
+1. Task starts
 2. Task fails after 2 seconds (bar changes color)
-3. After exponential backoff delay (510/20 seconds), task restarts
+3. After exponential backoff delay (5/10/20 seconds), task restarts
 4. If it fails again, another retry occurs
 5. Eventually, the task either succeeds or exhausts retries and enters FAILURE state
 
@@ -474,9 +661,13 @@ The detail view shows:
 
 This visibility is critical for production debugging. When a task fails, you can immediately see the exception and traceback without accessing server logs or searching through gigabytes of data.
 
-### 3.3 Monitor a Task That Times Out
+### 3.4 Monitor a Task That Times Out
 
-The `slow_task` from Module 54 accepts a duration parameter and enforces a soft timeout of 8 seconds. Trigger it with a duration that exceeds the timeout:
+The `slow_task` from Module 54 accepts a duration parameter and enforces a soft timeout of 8 seconds.
+
+**Predict:** You trigger `slow_task` with a duration of 20 seconds. The soft timeout is 8 seconds. What final state will Flower display — SUCCESS or FAILURE? Why?
+
+Trigger the task:
 
 ```bash
 curl -X POST http://localhost:5000/test-timeout \
@@ -484,75 +675,133 @@ curl -X POST http://localhost:5000/test-timeout \
   -d '{"duration": 20}'
 ```
 
+<details>
+<summary>Click to verify your prediction</summary>
+
+The task transitions:
+
+1. `PENDING` — Task queued
+2. `STARTED` — Worker begins execution
+3. After 8 seconds (the soft timeout), the task catches `SoftTimeLimitExceeded`
+4. `SUCCESS` — Task completes gracefully with result: `{"status": "timeout", "message": "Task exceeded time limit"}`
+
+The final state is **SUCCESS** because the `slow_task` implementation catches `SoftTimeLimitExceeded` and returns a structured timeout response instead of letting the exception propagate.
+
+If the task did not handle `SoftTimeLimitExceeded`, or if the duration exceeded the hard timeout (10 seconds), the state would change to `FAILURE` with exception `TimeLimitExceeded`.
+
+</details>
+
 Switch to Flower's **Tasks** tab and observe the task:
 
 ![alt text](./images/image-9.png)
 
-The task transitions:
-
-1. `PENDING` → Task queued
-2. `STARTED` → Worker begins execution
-3. After 8 seconds (the soft timeout), the task catches `SoftTimeLimitExceeded`
-4. `SUCCESS` → Task completes gracefully with result: `{"status": "timeout", "message": "Task exceeded time limit"}`
-
-If you trigger the task with a duration longer than the hard timeout (10 seconds), or if the task does not handle `SoftTimeLimitExceeded`, the state will change to `FAILURE` with exception `TimeLimitExceeded`.
-
 The Flower timeline visualizes this entire lifecycle without requiring you to watch worker logs.
 
-### 3.4 Understanding Task State Transitions
+### 3.5 Understanding Task State Transitions
 
-Flower displays tasks in six possible states:
+Flower displays tasks in six possible states. Complete the table:
 
 | State | Meaning |
 |-------|---------|
-| **PENDING** | Task queued but not yet picked up by worker|
+| **PENDING** | ___ |
+| **STARTED** | ___ |
+| **SUCCESS** | ___ |
+| **FAILURE** | ___ |
+| **RETRY** | ___ |
+| **REVOKED** | ___ |
+
+<details>
+<summary>Click to see completed table</summary>
+
+| State | Meaning |
+|-------|---------|
+| **PENDING** | Task queued but not yet picked up by worker |
 | **STARTED** | Worker currently executing task |
 | **SUCCESS** | Task completed without exception |
 | **FAILURE** | Task raised unhandled exception |
 | **RETRY** | Task failed but will retry |
 | **REVOKED** | Task cancelled before execution |
 
+</details>
+
 Common state transition patterns:
 
-**Successful task:**
-```
-PENDING → STARTED → SUCCESS
+```mermaid
+graph LR
+    subgraph Success["Successful Task"]
+        S1[PENDING] --> S2[STARTED] --> S3[SUCCESS]
+    end
+
+    style S1 fill:#fff9c4,stroke:#f9a825
+    style S2 fill:#bbdefb,stroke:#1565c0
+    style S3 fill:#c8e6c9,stroke:#2e7d32
 ```
 
-**Task with retries that eventually succeeds:**
-```
-PENDING → STARTED → RETRY → PENDING → STARTED → SUCCESS
+```mermaid
+graph LR
+    subgraph Retry["Task with Retries (Eventually Succeeds)"]
+        R1[PENDING] --> R2[STARTED] --> R3[RETRY]
+        R3 --> R4[PENDING] --> R5[STARTED] --> R6[SUCCESS]
+    end
+
+    style R1 fill:#fff9c4,stroke:#f9a825
+    style R2 fill:#bbdefb,stroke:#1565c0
+    style R3 fill:#ffe0b2,stroke:#e65100
+    style R4 fill:#fff9c4,stroke:#f9a825
+    style R5 fill:#bbdefb,stroke:#1565c0
+    style R6 fill:#c8e6c9,stroke:#2e7d32
 ```
 
-**Task that exhausts retries:**
-```
-PENDING → STARTED → RETRY → PENDING → STARTED → RETRY → PENDING → STARTED → FAILURE
-```
+```mermaid
+graph LR
+    subgraph Exhaust["Task That Exhausts Retries"]
+        E1[PENDING] --> E2[STARTED] --> E3[RETRY]
+        E3 --> E4[PENDING] --> E5[STARTED] --> E6[FAILURE]
+    end
 
-**Task that times out:**
-```
-PENDING → STARTED → FAILURE (TimeLimitExceeded)
+    style E1 fill:#fff9c4,stroke:#f9a825
+    style E2 fill:#bbdefb,stroke:#1565c0
+    style E3 fill:#ffe0b2,stroke:#e65100
+    style E4 fill:#fff9c4,stroke:#f9a825
+    style E5 fill:#bbdefb,stroke:#1565c0
+    style E6 fill:#ffcdd2,stroke:#c62828
 ```
 
 Understanding these patterns helps you diagnose task failures quickly during production incidents.
 
-### 3.5 Checkpoint
+### 3.6 Checkpoint
 
 Verify you can perform these operations:
 
 - [ ] Trigger a task via Flask API and see it appear in Flower
-- [ ] Observe state transitions in the Tasks tab (PENDING → STARTED → SUCCESS)
+- [ ] Observe state transitions in the Tasks tab (PENDING, STARTED, SUCCESS)
 - [ ] Click a task to view arguments and return value
 - [ ] Trigger `flaky_task` and view retry history and exception traceback
 - [ ] Trigger `slow_task` with timeout and observe graceful handling
+- [ ] You can match each task state to its meaning
 
 ---
 
 ## Chapter 4: Worker Health and Queue Monitoring
 
-Monitor worker status and identify queue backlogs that indicate capacity problems.
+Monitoring individual tasks reveals micro-level behavior. Worker health and queue metrics reveal macro-level system performance. This chapter covers detecting worker failures and identifying queue backlogs before they affect users.
 
-### 4.1 Inspect Worker Configuration
+### 4.1 Think First: Capacity Planning
+
+**Question:** Your system processes 100 tasks per minute. Each task takes 3 seconds. You have one worker with concurrency of 4 (four parallel tasks). Is this configuration sufficient? What metric in Flower would reveal the problem if it were not?
+
+<details>
+<summary>Click to review answer</summary>
+
+Capacity analysis:
+- 4 concurrent tasks, each taking 3 seconds = the worker can process approximately 80 tasks per minute (4 tasks x 20 cycles per minute)
+- With 100 tasks arriving per minute and only 80 being processed, 20 tasks per minute accumulate in the queue
+
+The **Broker tab** in Flower would show the "Messages in Queue" count increasing over time. This metric reveals queue backlogs before they cause visible latency or timeout failures.
+
+</details>
+
+### 4.2 Inspect Worker Configuration
 
 Click the **Workers** tab in Flower:
 
@@ -575,20 +824,26 @@ Click on a worker's hostname to view detailed configuration:
 
 ![alt text](./images/image-11.png)
 
-
 This information verifies your worker configuration without requiring SSH access to production servers.
 
-### 4.2 Testing Worker Failure Detection
+### 4.3 Testing Worker Failure Detection
 
 Flower detects when workers go offline. Test this behavior:
 
 In Terminal 2 (where your Celery worker is running), press `Ctrl+C` to stop the worker.
 
+**Predict:** After stopping the worker, what status will the Workers page show? How quickly will Flower detect the change?
+
 Return to the Flower browser tab. After a few seconds, refresh the **Workers** page.
 
-![alt text](./images/image-12.png)
+<details>
+<summary>Click to verify</summary>
 
-The worker status changes to "Offline". This visibility helps you detect worker crashes or deployments that accidentally terminate workers.
+The worker status changes to "Offline". Flower detects the change within a few seconds of the worker stopping. This visibility helps you detect worker crashes or deployments that accidentally terminate workers.
+
+</details>
+
+![alt text](./images/image-12.png)
 
 Restart the worker:
 
@@ -600,9 +855,24 @@ celery -A app.celery worker --loglevel=info
 
 Refresh the Flower Workers page. The worker status returns to "Online".
 
-### 4.3 Monitor Queue Backlogs
+### 4.4 Monitor Queue Backlogs
 
 Queue backlogs occur when tasks are submitted faster than workers can process them. This leads to increased latency and eventual timeout failures. Flower can identify backlogs before they cause user-visible problems.
+
+```mermaid
+graph TD
+    A["Worker STOPPED\n(Ctrl+C)"] --> B["20 tasks queued via Flask API"]
+    B --> C["Redis broker accumulates messages"]
+    C --> D["Flower Broker tab shows\nMessages in Queue: 20"]
+    D --> E["Worker RESTARTED"]
+    E --> F["Worker drains the queue"]
+    F --> G["Flower Broker tab shows\nMessages in Queue: 0"]
+
+    style A fill:#ffcdd2,stroke:#c62828
+    style D fill:#fff3e0,stroke:#e65100
+    style E fill:#c8e6c9,stroke:#2e7d32
+    style G fill:#c8e6c9,stroke:#2e7d32
+```
 
 Stop your Celery worker (Terminal 2: `Ctrl+C`).
 
@@ -641,9 +911,10 @@ Return to the Flower Broker tab and refresh periodically. The "Messages in Queue
 ![alt text](./images/image-15.png)
 ![alt text](./images/image-16.png)
 ![alt text](./images/image-17.png)
+
 This capability lets you monitor queue health without writing custom Redis queries.
 
-### 4.4 Checkpoint
+### 4.5 Checkpoint
 
 Confirm you can:
 
@@ -652,29 +923,56 @@ Confirm you can:
 - [ ] Detect when a worker goes offline
 - [ ] Monitor queue backlog in the Broker tab
 - [ ] Observe queue length decrease as worker processes tasks
+- [ ] You can explain what a growing "Messages in Queue" count indicates
 
 ---
 
 <!-- ## Chapter 5: Production Security and Deployment -->
 ## Chapter 5: Production Security
 
-Configure authentication and reverse proxy setup for production Flower deployments.
+Monitoring dashboards expose operational data — task arguments, user email addresses, error tracebacks, and worker configurations. Without access control, anyone who discovers the Flower port can view this information. This chapter covers securing the dashboard for production environments.
 
-### 5.1 The Security Problem
+### 5.1 Think First: Security Risks
 
-By default, Flower has no authentication. Anyone who can access port 5555 can view all tasks, including task arguments that might contain sensitive data (user IDs, email addresses, API keys). In production, you must restrict access.
+**Question:** By default, Flower runs without authentication on port 5555. Consider a scenario where task arguments include user email addresses and API keys. What are the risks of leaving the dashboard unprotected?
+
+<details>
+<summary>Click to review answer</summary>
+
+Risks include:
+- **Data exposure**: Anyone with network access can view task arguments containing PII (emails, user IDs) and secrets (API keys)
+- **Operational information leakage**: Attackers can observe task patterns, queue sizes, and worker configurations to plan attacks
+- **Task manipulation**: Some Flower configurations allow revoking or terminating tasks via the dashboard
+- **Compliance violations**: Exposed PII may violate GDPR, HIPAA, or other data protection regulations
+
+Production deployments must restrict access with authentication and encrypted transport (HTTPS).
+
+</details>
 
 ### 5.2 Enable Basic Authentication
 
 Stop your Flower process (Terminal 4: `Ctrl+C`).
 
-Restart Flower with basic authentication:
+Restart Flower with basic authentication. Complete the command:
+
+```bash
+celery -A app.celery flower \
+  --port=5555 \
+  --___=admin:securepassword123  # Q1: What flag enables authentication?
+```
+
+<details>
+<summary>Click to see the complete command</summary>
 
 ```bash
 celery -A app.celery flower \
   --port=5555 \
   --basic_auth=admin:securepassword123
 ```
+
+**Answer:** `basic_auth` — this flag accepts `username:password` pairs to protect the dashboard.
+
+</details>
 
 Navigate to `http://localhost:5555`. The browser displays an authentication prompt:
 
@@ -769,7 +1067,30 @@ Certbot automatically configures Nginx with SSL and redirects HTTP to HTTPS. -->
 
 For operational convenience, create a shell script that launches Flower with standard configuration.
 
-Create `start_flower.sh`:
+Complete the missing parameters in `start_flower.sh`:
+
+```bash
+#!/bin/bash
+
+# Activate virtual environment
+source .venv/bin/activate
+
+# Launch Flower with authentication and persistence
+celery -A app.celery flower \
+  --port=___ \                   # Q1: Standard Flower port?
+  --basic_auth=___:___ \         # Q2: Username and password?
+  --max_tasks=___ \              # Q3: Limit to prevent memory bloat?
+  --persistent=True \
+  --db=/tmp/flower.db
+```
+
+**Hints:**
+- Port 5555 is the conventional Flower port
+- Choose a username and password for dashboard access
+- `--max_tasks` limits how many tasks Flower keeps in memory (e.g., 10000)
+
+<details>
+<summary>Click to see the complete script</summary>
 
 ```bash
 #!/bin/bash
@@ -786,9 +1107,16 @@ celery -A app.celery flower \
   --db=/tmp/flower.db
 ```
 
+**Answers:**
+- Q1: `5555` — the standard Flower port
+- Q2: `admin:securepassword123` — credentials for dashboard access
+- Q3: `10000` — limits in-memory task history to prevent memory bloat
+
+</details>
+
 The `--max_tasks` parameter limits in-memory task history to prevent memory bloat. The `--persistent=True` flag persists task history to a SQLite database, allowing Flower to survive restarts without losing historical data.
 
-Make the script executable:
+Create the file and make it executable:
 
 ```bash
 chmod +x start_flower.sh
@@ -810,14 +1138,28 @@ Verify production readiness:
 - [ ] You understand that basic auth over HTTP is insecure
 <!-- - [ ] You can configure Nginx as a reverse proxy -->
 - [ ] You have a startup script for consistent Flower launches
+- [ ] You can explain what `--persistent=True` and `--max_tasks` do
 
 ---
 
-<!-- ## Chapter 6: Filtering, Searching, and Task History
+## Chapter 6: Filtering, Searching, and Task History
 
-Use Flower's search and filter capabilities to find specific tasks in large task histories.
+Production systems process thousands of tasks per hour. Finding a specific failed task or isolating tasks for a particular user requires filtering and search capabilities. Flower provides these tools through its Tasks tab interface.
 
-### 6.1 Generate Sample Task Data
+### 6.1 Think First: Finding a Needle in a Haystack
+
+**Question:** Your system processed 5,000 tasks in the last hour. A customer reports that their welcome email never arrived. You know their email address is `customer@example.com`. Without filtering or search, how would you find the relevant task? How does Flower improve this workflow?
+
+<details>
+<summary>Click to review answer</summary>
+
+Without filtering, you would scroll through 5,000 task entries manually, reading each task's arguments to find the one containing `customer@example.com`. This could take 30+ minutes.
+
+With Flower's search, you enter `customer@example.com` in the search box. Flower instantly filters to only tasks where the argument or result contains that email address. The task, its state, exception (if any), and traceback are immediately visible.
+
+</details>
+
+### 6.2 Generate Sample Task Data
 
 Trigger multiple tasks to populate Flower's history:
 
@@ -847,7 +1189,7 @@ done
 
 These commands create a mix of successful, failed, and retried tasks.
 
-### 6.2 Filter by Task State
+### 6.3 Filter by Task State
 
 In Flower, navigate to the **Tasks** tab. The page displays all tasks with a filter bar at the top.
 
@@ -857,9 +1199,23 @@ Click the filter options:
 - **Task Name Filter**: Select `app.tasks.send_welcome_email` to isolate email tasks. Select `app.tasks.flaky_task` to view only flaky task attempts.
 - **Time Range**: Filter to "Last Hour", "Last 24 Hours", or custom date range.
 
+**Predict:** After running the commands above, how many tasks will the SUCCESS filter show? How many will the FAILURE filter show?
+
+<details>
+<summary>Click to review</summary>
+
+The exact counts depend on the `flaky_task` random behavior:
+- **SUCCESS**: At least 5 (welcome emails) + some reports and flaky tasks that succeeded
+- **FAILURE**: Some `flaky_task` executions that exhausted retries (0-3 depending on randomness)
+- **RETRY**: Any `flaky_task` currently in a retry cycle
+
+The key insight is that filtering isolates specific states instantly, eliminating manual scanning.
+
+</details>
+
 Filtering is essential in production where thousands of tasks execute per minute. Without filters, finding a specific failed task would require scrolling through dense lists.
 
-### 6.2 Search for Specific Tasks
+### 6.4 Search for Specific Tasks
 
 The search box at the top of the Tasks page searches across:
 
@@ -884,7 +1240,7 @@ Flower displays only that task.
 
 This search capability eliminates the need to grep through log files when debugging production issues.
 
-### 6.3 Checkpoint
+### 6.5 Checkpoint
 
 Confirm you can:
 
@@ -892,22 +1248,47 @@ Confirm you can:
 - [ ] Filter tasks by name
 - [ ] Search for tasks by argument values
 - [ ] Search for tasks by task ID
+- [ ] You can explain why filtering matters at scale
 
---- -->
+---
 
 ## Epilogue: The Complete Monitoring System
 
 You have implemented real-time monitoring for your Flask-Celery task queue. Your system now provides visibility into task execution, worker health, and queue backlogs.
 
+```mermaid
+graph TB
+    subgraph Monitoring["Complete Monitoring System"]
+        direction TB
+        A["Task Execution\nPENDING - STARTED - SUCCESS/FAILURE/RETRY"]
+        B["Task Details\nArguments, Results, Tracebacks, Duration"]
+        C["Worker Health\nActive Count, Concurrency, Processed Tasks"]
+        D["Queue Performance\nPending Count, Backlog Detection"]
+        E["Search & Filter\nBy State, Name, Arguments, Task ID"]
+        F["Security\nBasic Auth, Persistent History"]
+    end
+
+    G["Flower Dashboard :5555"] --> A
+    G --> B
+    G --> C
+    G --> D
+    G --> E
+    G --> F
+
+    style G fill:#fff3e0,stroke:#e65100
+    style Monitoring fill:#f5f5f5,stroke:#333
+```
+
 ### Monitoring Capabilities
 
 | Metric | Flower provides |
 |--------|-----------------|
-| **Task Execution** | Real-time state transitions (PENDING → STARTED → SUCCESS/FAILURE/RETRY) |
+| **Task Execution** | Real-time state transitions (PENDING, STARTED, SUCCESS/FAILURE/RETRY) |
 | **Task Details** | Arguments, return values, exception tracebacks, execution duration |
 | **Worker Health** | Active worker count, concurrency, processed task count, uptime |
 | **Queue Performance** | Pending task count (backlog), tasks per second rate |
 | **Task History** | Searchable and filterable history of all executed tasks |
+| **Security** | Basic authentication, persistent task history |
 
 ### Verification Commands
 
@@ -938,7 +1319,7 @@ These generalizable principles apply beyond Celery monitoring:
 
 1. **Observability is not optional**: Production systems without real-time monitoring are undebuggable during incidents. Invest in observability before failures occur.
 
-2. **Separate monitoring from execution**: Monitoring tools should read system state without modifying it. Flower does not execute tasks—it observes them.
+2. **Separate monitoring from execution**: Monitoring tools should read system state without modifying it. Flower does not execute tasks — it observes them.
 
 3. **Expose actionable metrics**: Effective monitoring surfaces metrics that drive decisions: queue backlogs trigger auto-scaling, failure rates trigger alerts, slow workers trigger investigation.
 
@@ -946,9 +1327,40 @@ These generalizable principles apply beyond Celery monitoring:
 
 5. **Filtering is essential at scale**: Systems that process millions of tasks cannot rely on manual log searches. Searchable, filterable interfaces make large-scale debugging feasible.
 
-6. **State transitions reveal system behavior**: Tracking state over time (PENDING → STARTED → SUCCESS) provides more insight than point-in-time snapshots.
+6. **State transitions reveal system behavior**: Tracking state over time (PENDING, STARTED, SUCCESS) provides more insight than point-in-time snapshots.
 
 7. **Visibility reduces mean time to recovery**: When failures occur, the time spent identifying the failure dominates the time spent fixing it. Real-time dashboards reduce identification time from hours to seconds.
+
+---
+
+## Final Self-Assessment
+
+Before completing this lab, verify you can answer these questions:
+
+1. What is Flower's relationship with the Celery worker? Does it execute tasks?
+
+2. What are the six possible task states Flower displays?
+
+3. How does Flower detect a queue backlog? Where is this metric visible?
+
+4. Why is basic authentication over HTTP insecure? What additional measure is required?
+
+5. If Flower crashes, what happens to task execution?
+
+<details>
+<summary>Click to review answers</summary>
+
+1. **Flower's role:** Flower is a read-only monitoring tool. It connects to Redis (broker and result backend) to read task states and worker information. It does NOT execute tasks. If Flower crashes, task execution continues unaffected.
+
+2. **Six task states:** PENDING (queued), STARTED (executing), SUCCESS (completed), FAILURE (exception raised), RETRY (will retry), REVOKED (cancelled).
+
+3. **Queue backlog detection:** The Flower **Broker tab** displays "Messages in Queue" — the count of tasks waiting for a worker. A growing count indicates tasks are arriving faster than workers can process them.
+
+4. **Basic auth insecurity:** Basic authentication encodes credentials in base64, which is trivially decoded. HTTPS (TLS/SSL) is required to encrypt the credentials in transit.
+
+5. **Flower crash impact:** None. Flask continues queuing tasks, workers continue processing them, Redis continues storing results. Only monitoring visibility is lost temporarily.
+
+</details>
 
 ---
 
@@ -1058,7 +1470,7 @@ You have implemented operational monitoring for Celery task queues. However, Flo
 - How do tasks interact with databases?
 - Which service in a multi-service architecture is the bottleneck?
 
-These questions require **distributed tracing**—a technique that tracks requests across multiple services and visualizes the complete execution timeline.
+These questions require **distributed tracing** — a technique that tracks requests across multiple services and visualizes the complete execution timeline.
 
 Module 56 introduces distributed tracing with Grafana Tempo and OpenTelemetry. You will instrument your Flask-Celery application to generate trace spans, export them to Tempo, and visualize end-to-end request flows in Grafana. This visibility extends beyond individual task monitoring to full-system observability.
 
