@@ -1,3 +1,5 @@
+# Lab 1: Adding Reliability Features (Retries, Timeouts, Error Handling, Logging)
+
 ## Introduction
 
 This lab teaches you to transform a basic Flask-Celery task queue into a production-ready system. Building on the async task processing from Module 53, you will implement automatic retries with exponential backoff, timeout enforcement, comprehensive logging, and structured error handling.
