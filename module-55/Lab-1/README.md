@@ -290,7 +290,7 @@ Verify Redis is active:
 docker ps
 ```
 
-![alt text](image.png)
+![alt text](./images/image.png)
 
 The output should show `flask-celery-redis` running.
 
@@ -330,7 +330,7 @@ The `-A app.celery` parameter tells Flower which Celery application instance to 
 
 Expected output:
 
-![alt text](image-1.png)
+![alt text](./images/image-1.png)
 
 Leave this terminal open. Flower must remain running to provide real-time monitoring.
 
@@ -338,13 +338,13 @@ Leave this terminal open. Flower must remain running to provide real-time monito
 
 To access the Flower with Poridhi's Load Balancer, first find your wt0 IP address by running `ifconfig` and looking for the `wt0` interface. Note the IP address (something like `100.125.246.186`).
 
-![alt text](image-2.png)
+![alt text](./images/image-2.png)
 
 **Create Load Balancer:**
 
 Go to Poridhi's Load Balancer dashboard, create a new Load Balancer, use your wt0 IP address with port 8000, and click "Create".
 
-![alt text](image-3.png)
+![alt text](./images/image-3.png)
 
 You'll receive a public URL like `https://lb-xxxxx.poridhi.io` that you can use to access Flower from anywhere.
 
@@ -358,7 +358,7 @@ Open a web browser and navigate to:
 
 The Flower homepage displays:
 
-![alt text](image-4.png)
+![alt text](./images/image-4.png)
 
 The Tasks page will initially be empty because no tasks have executed since Flower started.
 
@@ -411,7 +411,7 @@ The Tasks page displays your task. The State column will transition:
 
 The transition from PENDING to SUCCESS takes approximately 5 seconds because `send_welcome_email` includes a 5-second sleep to simulate email API latency.
 
-![alt text](image-5.png)
+![alt text](./images/image-5.png)
 
 The task row shows:
 
@@ -428,7 +428,7 @@ The task row shows:
 
 Click on the task row to view full details:
 
-![alt text](image-6.png)
+![alt text](./images/image-6.png)
 
 The detail view includes:
 
@@ -452,11 +452,11 @@ curl -X POST http://localhost:5000/test-reliability \
 
 Now check flower:
 
-![alt text](image-7.png)
+![alt text](./images/image-7.png)
 
-The timeline shows when tasks start and when they complete. For the flaky task, you will likely observe:
+The timeline shows when tasks start and when they complete. For the flaky task, you might observe:
 
-1. Task starts (blue bar appears)
+1. Task starts 
 2. Task fails after 2 seconds (bar changes color)
 3. After exponential backoff delay (510/20 seconds), task restarts
 4. If it fails again, another retry occurs
@@ -464,7 +464,7 @@ The timeline shows when tasks start and when they complete. For the flaky task, 
 
 Return to the **Tasks** tab and locate the `flaky_task` entry. Click it to view details.
 
-![alt text](image-8.png)
+![alt text](./images/image-8.png)
 
 The detail view shows:
 
@@ -476,7 +476,7 @@ This visibility is critical for production debugging. When a task fails, you can
 
 ### 3.3 Monitor a Task That Times Out
 
-The `slow_task` from Module 54 accepts a duration parameter and enforces a soft timeout of 12 seconds. Trigger it with a duration that exceeds the timeout:
+The `slow_task` from Module 54 accepts a duration parameter and enforces a soft timeout of 8 seconds. Trigger it with a duration that exceeds the timeout:
 
 ```bash
 curl -X POST http://localhost:5000/test-timeout \
@@ -486,13 +486,13 @@ curl -X POST http://localhost:5000/test-timeout \
 
 Switch to Flower's **Tasks** tab and observe the task:
 
-![alt text](image-9.png)
+![alt text](./images/image-9.png)
 
 The task transitions:
 
 1. `PENDING` → Task queued
 2. `STARTED` → Worker begins execution
-3. After 12 seconds (the soft timeout), the task catches `SoftTimeLimitExceeded`
+3. After 8 seconds (the soft timeout), the task catches `SoftTimeLimitExceeded`
 4. `SUCCESS` → Task completes gracefully with result: `{"status": "timeout", "message": "Task exceeded time limit"}`
 
 If you trigger the task with a duration longer than the hard timeout (10 seconds), or if the task does not handle `SoftTimeLimitExceeded`, the state will change to `FAILURE` with exception `TimeLimitExceeded`.
@@ -556,7 +556,7 @@ Monitor worker status and identify queue backlogs that indicate capacity problem
 
 Click the **Workers** tab in Flower:
 
-![alt text](image-10.png)
+![alt text](./images/image-10.png)
 
 The Workers page displays all active workers with their metrics:
 
@@ -573,7 +573,7 @@ The **Processed** count increases each time a worker completes a task. If you ha
 
 Click on a worker's hostname to view detailed configuration:
 
-![alt text](image-11.png)
+![alt text](./images/image-11.png)
 
 
 This information verifies your worker configuration without requiring SSH access to production servers.
@@ -586,7 +586,7 @@ In Terminal 2 (where your Celery worker is running), press `Ctrl+C` to stop the 
 
 Return to the Flower browser tab. After a few seconds, refresh the **Workers** page.
 
-![alt text](image-12.png)
+![alt text](./images/image-12.png)
 
 The worker status changes to "Offline". This visibility helps you detect worker crashes or deployments that accidentally terminate workers.
 
@@ -618,7 +618,7 @@ done
 
 Switch to Flower and click the **Broker** tab:
 
-![alt text](image-13.png)
+![alt text](./images/image-13.png)
 
 The Broker page displays:
 
@@ -637,10 +637,10 @@ celery -A app.celery worker --loglevel=info
 
 Return to the Flower Broker tab and refresh periodically. The "Messages in Queue" count decreases as the worker processes tasks.
 
-![alt text](image-14.png)
-![alt text](image-15.png)
-![alt text](image-16.png)
-![alt text](image-17.png)
+![alt text](./images/image-14.png)
+![alt text](./images/image-15.png)
+![alt text](./images/image-16.png)
+![alt text](./images/image-17.png)
 This capability lets you monitor queue health without writing custom Redis queries.
 
 ### 4.4 Checkpoint
@@ -677,7 +677,7 @@ celery -A app.celery flower \
 
 Navigate to `http://localhost:5555`. The browser displays an authentication prompt:
 
-![alt text](image-18.png)
+![alt text](./images/image-18.png)
 
 Enter:
 - **Username**: `admin`
@@ -850,7 +850,7 @@ These commands create a mix of successful, failed, and retried tasks.
 
 In Flower, navigate to the **Tasks** tab. The page displays all tasks with a filter bar at the top.
 
-![Task Filters](images/image-7.png)
+![Task Filters](images/./images/image-7.png)
 
 Click the filter options:
 
