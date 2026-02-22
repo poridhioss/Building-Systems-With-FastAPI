@@ -183,6 +183,7 @@ These log entries are disconnected. To determine total request duration, you mus
 
 Distributed tracing solves this by producing a unified timeline:
 
+#####CHANGE_NEEDED: celery task should be inside redis span. maybe
 ```
 Trace ID: abc-123
 ├─ Span: POST /register [Flask API] ────────── 50ms
@@ -199,9 +200,17 @@ This timeline shows that the entire request took 5050ms, Flask responded in 50ms
 
 ### 1.2 Core Terminology
 
-Four concepts form the foundation of distributed tracing:
+Five concepts form the foundation of distributed tracing:
 
-**Trace** — A trace represents the complete journey of a single request through the system. It has a unique Trace ID that ties all related operations together. One user request produces one trace.
+**Trace** — A trace represents the complete journey of a single **user request** through the system. It has a unique Trace ID that ties all related operations together. One user request = one Trace ID. A new Trace ID is generated every time a client sends a request to the Flask API. If three users register in the same minute, three separate Trace IDs are generated:
+
+```
+User Alice registers  → Trace ID: abc-111
+User Bob registers    → Trace ID: abc-222
+User Carol registers  → Trace ID: abc-333
+```
+
+Each trace contains multiple spans from multiple services, but they all share the same Trace ID.
 
 **Span** — A span represents a single operation within a trace. Each span has a name (e.g., "POST /register", "send_email"), a start time, a duration, a parent span (except for the root span), and attributes (key-value metadata like `user_id` or `http.method`). Spans nest to show parent-child relationships:
 
@@ -212,11 +221,95 @@ Root Span: HTTP Request
 └─ Child Span: Queue background task
 ```
 
+**Service** — A service is a running process that generates spans. In this lab, there are two services: `flask-api` (the Flask application process) and `celery-worker` (the Celery worker process). A service is NOT tied to a single Trace ID. Instead, a service participates in many different traces over time:
+
+```
+flask-api service participates in:
+  - Trace abc-111 (Alice's request)
+  - Trace abc-222 (Bob's request)
+  - Trace abc-333 (Carol's request)
+
+celery-worker service also participates in:
+  - Trace abc-111 (Alice's email task)
+  - Trace abc-222 (Bob's email task)
+  - Trace abc-333 (Carol's email task)
+```
+
+The key relationship: **One Trace ID spans multiple services. One service generates spans for many different Trace IDs.**
+
 **OpenTelemetry (OTel)** — The industry-standard framework for instrumenting applications to generate traces, metrics, and logs. It provides SDKs for multiple languages (Python, Go, Java, Node.js), auto-instrumentation for popular frameworks (Flask, Django, FastAPI), and exporters to send data to various backends (Tempo, Jaeger, Zipkin, Datadog).
 
 **Grafana Tempo** — A distributed tracing backend that stores traces efficiently. It integrates with Grafana for visualization and supports the OTLP (OpenTelemetry Protocol) for receiving trace data over HTTP or gRPC.
 
-### 1.3 Prediction Exercise
+### 1.3 How a Trace ID Travels Across Services
+
+The word "distributed" in distributed tracing means a single Trace ID follows a request as it moves from one process to another. This requires **trace context propagation** — the mechanism that passes the Trace ID from Flask to Celery.
+
+Here is the complete lifecycle of a Trace ID for a single registration request:
+
+```
+1. Client sends POST /register
+   └─ No Trace ID yet
+
+2. Flask receives the request
+   └─ OpenTelemetry generates: Trace ID = abc-123, Span ID = span-1
+   └─ Creates Root Span: "POST /register" (Trace ID: abc-123)
+
+3. Flask queues a Celery task via Redis
+   └─ OpenTelemetry INJECTS trace context into the task message:
+      Task payload: {
+        "task": "send_welcome_email",
+        "args": ["alice@example.com"],
+        "headers": {
+          "traceparent": "00-abc123-span1-01"  ← Trace ID embedded here
+        }
+      }
+   └─ Flask sends its spans to Tempo
+
+4. Celery worker picks up the task from Redis
+   └─ OpenTelemetry EXTRACTS trace context from the task headers:
+      Found: Trace ID = abc-123, Parent Span ID = span-1
+   └─ Creates Child Span: "send_welcome_email" with:
+      - Same Trace ID: abc-123
+      - Parent: span-1 (the Flask root span)
+      - New Span ID: span-2
+
+5. Celery worker completes the task
+   └─ Celery sends its spans to Tempo
+
+6. Tempo receives spans from both Flask and Celery
+   └─ Both have Trace ID = abc-123
+   └─ Tempo links them into a single trace
+
+7. Grafana queries Tempo for Trace ID abc-123
+   └─ Shows unified timeline:
+      ├─ POST /register [flask-api] ───── 130ms
+      └─ send_welcome_email [celery-worker] ───── 5000ms
+```
+
+**Step 3 is the critical step.** If the trace context is NOT injected into the task message, the Celery worker has no way to know which Trace ID it belongs to. It creates a **new, unrelated Trace ID** instead. This results in two disconnected traces in Grafana — one for Flask, one for Celery — and the "distributed" in distributed tracing is broken.
+
+**Without propagation (broken):**
+
+```
+Trace ID: abc-123 [flask-api only]
+└─ POST /register ────── 130ms
+
+Trace ID: xyz-789 [celery-worker only]  ← Different Trace ID!
+└─ send_welcome_email ────── 5000ms
+```
+
+**With propagation (working correctly):**
+
+```
+Trace ID: abc-123 [both services]
+├─ POST /register [flask-api] ────── 130ms
+└─ send_welcome_email [celery-worker] ────── 5000ms  (child of above)
+```
+
+This lab implements trace context propagation in Chapter 7 to ensure Flask and Celery spans are properly linked.
+
+### 1.4 Prediction Exercise
 
 Before building the tracing system, consider this scenario:
 
@@ -242,14 +335,17 @@ Auto-instrumentation adds additional spans for Redis operations (RPUSH for queui
 
 </details>
 
-### 1.4 Checkpoint
+### 1.5 Checkpoint
 
 Verify your understanding before proceeding:
 
 - [ ] A trace represents one complete request; a span represents one operation within that request
+- [ ] A Trace ID is generated per request, not per service — one Trace ID spans multiple services
+- [ ] A service (like flask-api) participates in many different Trace IDs over time
 - [ ] Spans form parent-child hierarchies that show how operations nest
+- [ ] Trace context propagation passes the Trace ID from Flask to Celery via task message headers
+- [ ] Without propagation, Flask and Celery create separate disconnected traces
 - [ ] OpenTelemetry generates trace data; Tempo stores it; Grafana visualizes it
-- [ ] Distributed tracing connects operations across process boundaries using a shared Trace ID
 
 ---
 
@@ -1067,29 +1163,131 @@ Verify your custom instrumentation:
 
 ---
 
-## Chapter 7: Trace Propagation and Performance Analysis
+## Chapter 7: Trace Context Propagation
 
-Distributed tracing works across process boundaries because trace context propagates automatically from Flask to Celery. This chapter examines how propagation works and demonstrates performance analysis using traces.
+In previous chapters, Flask and Celery each produced traces independently. If you compare Trace IDs in Grafana, you will notice that Flask spans carry one Trace ID and Celery spans carry a completely different Trace ID. This means the traces are **disconnected** — Grafana cannot stitch them into a single timeline.
 
-### 7.1 How Trace Propagation Works
+This chapter explains **why** this happens and **what trace context propagation means** conceptually. The next chapter will implement the fix.
 
-When Flask queues a Celery task, four steps occur:
+### 7.1 Observing the Problem
 
-1. **Flask receives the HTTP request** — OpenTelemetry generates a new Trace ID (e.g., `abc-123`) and creates a root span with a Span ID (e.g., `span-1`)
-2. **Flask queues the Celery task** — OpenTelemetry automatically injects trace context into the task payload. The task message in Redis includes `{"trace_id": "abc-123", "parent_span_id": "span-1", ...}`
-3. **Celery worker picks up the task** — OpenTelemetry extracts trace context from the task payload, creates a new span with the same Trace ID (`abc-123`), and sets its parent to `span-1`
-4. **Both spans arrive in Tempo** — Tempo stitches them together using the shared Trace ID. Grafana displays them as a single unified trace
+Send a request and find the resulting traces in Grafana:
 
-Verify this by examining span details in Grafana:
+```bash
+curl -X POST http://localhost:5000/send-email \
+  -H "Content-Type: application/json" \
+  -d '{"email": "alice@example.com", "subject": "Test", "body": "Hello"}'
+```
 
-![alt text](image-7.png)
+Open Grafana → Explore → Tempo. Search for `flask-api` traces and `celery-worker` traces separately:
 
-- Flask span: `trace_id=abc-123`, `span_id=span-1`, `parent_span_id=null`
-- Celery span: `trace_id=abc-123`, `span_id=span-2`, `parent_span_id=span-1`
+| Service | Trace ID | Observation |
+|---------|----------|-------------|
+| flask-api | `aaaa-1111-...` | Contains HTTP span + Redis RPUSH span |
+| celery-worker | `bbbb-2222-...` | Contains task execution span + custom spans |
 
-This automatic propagation is what makes distributed tracing "distributed"—traces follow requests across service boundaries without manual correlation.
+The two Trace IDs are **different**. Grafana shows them as two unrelated traces. There is no parent-child link between the Flask span and the Celery span.
 
-### 7.2 Performance Analysis with Traces
+### 7.2 Why Auto-Instrumentation Does Not Propagate Context Here
+
+OpenTelemetry auto-instrumentation propagates trace context automatically for **HTTP-based** communication. When Service A calls Service B over HTTP, the instrumentation injects a `traceparent` header into the outgoing request, and the receiving service extracts it.
+
+Flask-to-Celery communication does **not** use HTTP. The flow is:
+
+```
+Flask process → Redis RPUSH (task message) → Celery worker BRPOP (picks up message)
+```
+
+Redis is a message broker here, not an HTTP endpoint. The `RedisInstrumentor` traces the Redis commands themselves (RPUSH, BRPOP), but it has no mechanism to inject trace context **into the task payload**. The `CeleryInstrumentor` creates spans for task execution, but it does not extract trace context **from the task payload** either.
+
+The result: Flask starts a trace, Celery starts a **separate** trace. The two never connect.
+
+### 7.3 What Propagation Requires
+
+For Flask and Celery to share the same Trace ID, two things must happen:
+
+**Step 1 — Injection (Flask side):** Before the task message enters Redis, the current trace context (Trace ID + Span ID) must be **serialized** and **attached** to the task message as a header.
+
+The W3C Trace Context standard defines the format:
+
+```
+traceparent: 00-<trace_id>-<parent_span_id>-01
+```
+
+Example:
+
+```
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+```
+
+This header carries three pieces of information:
+- The Trace ID (`4bf92f...`)
+- The parent Span ID (`00f067...`)
+- A sampling flag (`01` = sampled)
+
+**Step 2 — Extraction (Celery side):** When the worker picks up the task, it must **read** the `traceparent` header from the task message, **parse** the Trace ID and parent Span ID, and use them as the context for its new span. This ensures the worker's span becomes a **child** of the Flask span.
+
+### 7.4 The Propagation Mechanism: Celery Signals
+
+Celery provides a **signal** system — hooks that fire at specific points in the task lifecycle. Two signals are relevant:
+
+| Signal | Fires when | Runs in |
+|--------|-----------|---------|
+| `before_task_publish` | A task is about to be sent to the broker | Flask process |
+| `task_prerun` | A task is about to execute | Celery worker process |
+
+OpenTelemetry provides two functions for propagation:
+
+| Function | Purpose |
+|----------|---------|
+| `propagate.inject(carrier)` | Serializes the current trace context (Trace ID + Span ID) into a dictionary |
+| `propagate.extract(carrier)` | Deserializes trace context from a dictionary and returns an OTel Context object |
+
+The propagation flow:
+
+```
+Flask process                          Celery worker process
+─────────────                          ──────────────────────
+1. HTTP request arrives                
+2. OTel creates Trace ID abc-123       
+3. before_task_publish fires           
+4. propagate.inject() writes           
+   traceparent into task headers       
+5. Task message + headers → Redis      
+                                       6. Worker picks up task
+                                       7. task_prerun fires
+                                       8. propagate.extract() reads
+                                          traceparent from headers
+                                       9. OTel creates span with
+                                          Trace ID abc-123 (same!)
+                                       10. Span's parent = Flask's span
+```
+
+After propagation, the trace in Grafana looks like:
+
+```
+Trace: abc-123
+├─ POST /send-email [flask-api] ──────── 120ms
+│  ├─ validate_request ────────────────── 2ms
+│  ├─ queue_email_task ────────────────── 15ms
+│  └─ Redis RPUSH ─────────────────────── 5ms
+└─ tasks.send_email [celery-worker] ──── 5200ms   ← CHILD of Flask span
+   ├─ smtp_connect ────────────────────── 200ms
+   └─ smtp_send ───────────────────────── 5000ms
+```
+
+Both services share Trace ID `abc-123`. Grafana stitches them into one timeline.
+
+### 7.5 Prediction Exercise
+
+Before implementing the fix in the next chapter, predict:
+
+1. Which file needs the `before_task_publish` signal handler — `run.py`, `app/__init__.py`, or `worker.py`?
+2. Which file needs the `task_prerun` signal handler?
+3. If `propagate.inject()` is called but `propagate.extract()` is not, what happens? (Hint: the headers travel through Redis but nobody reads them)
+4. If both signals work correctly, will the Redis RPUSH span from `flask-api` appear as a parent or sibling of the Celery task span?
+
+### 7.6 Performance Analysis with Traces
 
 Trigger a report generation task to observe how traces reveal performance bottlenecks:
 
@@ -1126,14 +1324,17 @@ Total: 235ms
 
 The `users` database query consumes 64% of the total time—the optimization target is immediately clear.
 
-### 7.3 Checkpoint
+### 7.7 Checkpoint
 
 Verify your understanding of trace propagation:
 
-- [ ] Trace context (Trace ID and Span ID) propagates automatically from Flask to Celery
-- [ ] OpenTelemetry injects trace context into the Redis task payload
-- [ ] Both Flask and Celery spans share the same Trace ID
-- [ ] Performance bottlenecks are identifiable by comparing span durations in the timeline
+- [ ] Flask and Celery currently produce **different** Trace IDs (disconnected traces)
+- [ ] Auto-instrumentation does not propagate context through Redis message brokers — only through HTTP
+- [ ] Propagation requires two steps: injection (Flask side) and extraction (Celery side)
+- [ ] Celery signals (`before_task_publish` and `task_prerun`) provide the hooks for injection and extraction
+- [ ] `propagate.inject()` serializes trace context; `propagate.extract()` deserializes it
+- [ ] After propagation, both services share the same Trace ID and Grafana stitches them into one timeline
+- [ ] Performance bottlenecks are identifiable by comparing span durations in the trace timeline
 
 ---
 
