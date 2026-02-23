@@ -1547,25 +1547,11 @@ curl -X POST http://localhost:5000/register \
 
 Wait 10 seconds for spans to flush, then open Grafana → Explore → Tempo.
 
-Set **Span Duration > 400ms** and click **Run query**.
+Set **Span Duration > 410ms** and click **Run query**.
 
 You should now see a **single trace** that contains spans from **both** services:
 
-GG
-
-```
-Unified Trace (Total: ~5700ms)
-├─ POST /register [flask-api] ───────────────── 50ms
-│  ├─ validate_request ────────────────────────── 5ms
-│  ├─ queue_email_task ────────────────────────── 10ms
-│  │  └─ RPUSH celery (Redis) ──────────────────── 8ms
-│  └─ build_response ──────────────────────────── 2ms
-└─ send_welcome_email [celery-worker] ─────── 5650ms
-   ├─ validate_email ──────────────────────────── 100ms
-   ├─ smtp_connect ────────────────────────────── 1000ms
-   ├─ send_email_message ──────────────────────── 3000ms
-   └─ update_user_record ──────────────────────── 500ms
-```
+![alt text](image-22.png)
 
 **Key verification points:**
 
@@ -1606,11 +1592,15 @@ Find all traces from the Flask API:
 {resource.service.name="flask-api"}
 ```
 
+![alt text](image-23.png)
+
 Find all traces from the Celery worker:
 
 ```
 {resource.service.name="celery-worker"}
 ```
+
+![alt text](image-24.png)
 
 ### 9.2 Searching by Span Attributes
 
@@ -1619,8 +1609,10 @@ Custom attributes added in Chapter 6 enable targeted searches.
 Find all traces for a specific email:
 
 ```
-{span.email.address="alice@example.com"}
+{span.email.address="propagation-test@example.com"}
 ```
+
+![alt text](image-25.png)
 
 Find all failed email validations:
 
@@ -1653,12 +1645,16 @@ Find server errors specifically:
 Trigger the flaky task that fails randomly (70% failure rate):
 
 ```bash
-curl -X POST http://localhost:5000/test-reliability
+curl -X POST http://localhost:5000/test-reliability\
+  -H "Content-Type: application/json" \
+  -d '{"task_number": 1}'
 ```
+
+![alt text](image-26.png)
 
 If the task fails, find its trace in Grafana:
 
-![alt text](image-9.png)
+GG
 
 Error traces display:
 
