@@ -1204,6 +1204,13 @@ This header carries three pieces of information:
 - The parent Span ID (`00f067...`)
 - A sampling flag (`01` = sampled)
 
+**What is the sampling flag?** In production systems handling thousands of requests per second, tracing every single request generates enormous amounts of data. Sampling controls which requests get traced. The sampling flag in the `traceparent` header tells downstream services whether this particular trace was selected for recording:
+
+- `01` = **sampled** — this trace IS being recorded. The downstream service should also record its spans for this trace.
+- `00` = **not sampled** — this trace is NOT being recorded. The downstream service can skip creating spans for this request, saving resources.
+
+When the flag is `01`, all services in the chain agree to record spans for this trace, ensuring the complete request journey is captured. When it's `00`, services may choose to drop the trace entirely. In this lab, all traces are sampled (`01`) because we are not using a sampling strategy — every request gets traced. Production systems typically use ratio-based sampling (e.g., trace 10% of requests) to balance observability with cost.
+
 **Step 2 — Extraction (Celery side):** When the worker picks up the task, it must **read** the `traceparent` header from the task message, **parse** the Trace ID and parent Span ID, and use them as the context for its new span. This ensures the worker's span becomes a **child** of the Flask span.
 
 ### 7.4 The Propagation Mechanism: Celery Signals
@@ -1265,6 +1272,19 @@ Before implementing the fix in the next chapter, predict:
 2. Which file needs the `task_prerun` signal handler?
 3. If `propagate.inject()` is called but `propagate.extract()` is not, what happens? (Hint: the headers travel through Redis but nobody reads them)
 4. If both signals work correctly, will the Redis RPUSH span from `flask-api` appear as a parent or sibling of the Celery task span?
+
+<details>
+<summary><strong>Answers</strong></summary>
+
+1. **`app/__init__.py`** — The `before_task_publish` signal must be registered in `app/__init__.py` because this file is imported by **both** the Flask process (`run.py` imports `from app import app`) and the Celery worker (`worker.py` imports `from app import celery`). The signal must be available in whichever process calls `.delay()` — and that is the Flask process. If you put it in `run.py`, it would only be registered when Flask starts, but `run.py` is never imported by the worker. If you put it in `worker.py`, it would only be registered in the worker process, but the signal fires in the **publisher** process (Flask), not the worker. `app/__init__.py` is the correct location because it runs as module-level code when `from app import app` executes in `run.py`, ensuring the signal handler is registered in the Flask process.
+
+2. **`worker.py`** — The `task_prerun` signal fires in the **worker** process just before a task executes. The worker entry point is `worker.py`, so registering the handler there ensures it runs in the correct process. Putting it in `app/__init__.py` would also work (since the worker imports from `app`), but `worker.py` is the cleaner choice because extraction is a worker-specific concern — Flask never needs to extract trace context from task headers.
+
+3. **Traces remain disconnected.** The `traceparent` header would be written into the task message headers and travel through Redis, but the worker would never read it. The worker would generate a new Trace ID as usual, and the two traces would remain separate. The injected headers would simply be ignored — dead data sitting in the task payload.
+
+4. **Sibling.** The Redis RPUSH span is created by the `RedisInstrumentor` as a child of the Flask HTTP span. The Celery task span, after propagation, becomes a child of the Flask HTTP span as well. Both share the same parent (the Flask HTTP span), making them **siblings** in the trace tree — not parent-child of each other.
+
+</details>
 
 ### 7.6 Performance Analysis with Traces
 
@@ -1337,6 +1357,28 @@ Chapter 7 explained why Flask and Celery traces are disconnected and what propag
 
 The `before_task_publish` signal fires in the **Flask process** whenever a task is about to be sent to Redis. This is where the current trace context gets injected into the task message headers.
 
+**Why `app/__init__.py` and not another file?**
+
+The injection handler must run in the **Flask process** — because that is where `.delay()` is called and where the `before_task_publish` signal fires. The question is: which file in the Flask process should register this handler?
+
+- **Not `run.py`** — While `run.py` does run in the Flask process, it is an entry point script. It is never imported as a module by anyone else. Signal handlers registered in `run.py` would work for Flask, but placing framework-level plumbing in an entry point violates separation of concerns.
+- **Not `app/routes.py`** — Route files define HTTP endpoints, not infrastructure hooks. Mixing trace propagation logic with route handlers makes the codebase harder to navigate.
+- **Not `otel_config.py`** — This file configures the OpenTelemetry SDK (TracerProvider, exporter, processor). Celery signal handlers are application-level hooks, not SDK configuration.
+- **`app/__init__.py` is correct** — This file already contains framework-level setup: Flask app creation, Celery app creation, and auto-instrumentor registration (`FlaskInstrumentor`, `RedisInstrumentor`). The `before_task_publish` signal handler is the same category — framework-level instrumentation plumbing. It belongs alongside the other instrumentors.
+
+There is also a **technical reason**: `app/__init__.py` executes as module-level code when Python runs `from app import app` (in `run.py`) or `from app import celery` (in `worker.py`). Any signal handler registered at module level in this file is automatically available in **both** processes. The `before_task_publish` signal fires in the Flask process, and since `run.py` does `from app import app`, the handler is registered before any request arrives. This is exactly the behavior we need.
+
+**How `propagate.inject()` works under the hood:**
+
+When `propagate.inject(headers)` is called, OpenTelemetry does the following:
+
+1. Reads the **current span** from the active context (the Flask HTTP request span)
+2. Extracts the Trace ID and Span ID from that span
+3. Formats them into the W3C `traceparent` header: `00-<trace_id>-<span_id>-<flags>`
+4. Writes this string into the `headers` dictionary: `headers["traceparent"] = "00-abc123-span1-01"`
+
+The `headers` dictionary is the task message's header map — part of the Celery message protocol. When the task is serialized and pushed to Redis via RPUSH, these headers travel with it as metadata. If no active span exists (e.g., `propagate.inject()` is called outside a request context), it writes nothing — the headers dictionary remains unchanged, and the worker will generate a new Trace ID as usual.
+
 Update `app/__init__.py` to add the signal handler:
 
 ```python
@@ -1396,6 +1438,24 @@ from app import tasks
 ### 8.2 Adding the Extraction Signal Handler
 
 The `task_prerun` signal fires in the **Celery worker process** just before a task executes. This is where the trace context gets extracted from the task headers and set as the active context.
+
+**Why `worker.py` and not another file?**
+
+The extraction handler must run in the **Celery worker process** — because that is where tasks execute and where the `task_prerun` signal fires. The question is: which file in the worker process should register this handler?
+
+- **Not `app/__init__.py`** — While placing it here would technically work (since `worker.py` imports `from app import celery`, which triggers `app/__init__.py`), extraction is a **worker-specific concern**. The Flask process never needs to extract trace context from task headers — it is the publisher, not the consumer. Keeping it in `app/__init__.py` would register the handler in the Flask process too, where it would never fire but would add unnecessary imports.
+- **Not `app/tasks.py`** — Task files define business logic (what the task does), not infrastructure plumbing (how trace context arrives). Every new task file would need to import and register the handler, violating DRY.
+- **`worker.py` is correct** — This file is the worker's entry point and the natural place for worker-specific infrastructure setup. It already configures OpenTelemetry for the worker (`configure_opentelemetry("celery-worker")`), imports the Celery app, and calls `CeleryInstrumentor().instrument()`. The `task_prerun` handler fits this same pattern: worker-specific instrumentation that runs once at startup.
+
+**How `propagate.extract()` and `context.attach()` work under the hood:**
+
+When the worker picks up a task from Redis, the task message includes headers — the same dictionary that `propagate.inject()` wrote to in the Flask process. The extraction process works in two steps:
+
+1. **`propagate.extract(headers)`** — OpenTelemetry reads the `traceparent` value from the headers dictionary (e.g., `"00-abc123-span1-01"`), parses the Trace ID (`abc123`), parent Span ID (`span1`), and sampling flag (`01`), and constructs an OTel `Context` object containing this information. **This does NOT yet affect the current trace.** It only creates a context object in memory.
+
+2. **`context.attach(ctx)`** — This sets the extracted context as the **active context** for the current thread. From this point forward, any new span created by OpenTelemetry (including the `CeleryInstrumentor`'s task span) will inherit the Trace ID and parent Span ID from this context. Without this call, the extracted context would be discarded and the worker would still generate a new Trace ID.
+
+Both steps are required. If you call `propagate.extract()` without `context.attach()`, the trace context is parsed but never activated — the worker still creates an independent trace. If you call `context.attach()` with an empty context, nothing changes — the worker still creates an independent trace.
 
 Update `worker.py`:
 
