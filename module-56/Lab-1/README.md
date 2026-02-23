@@ -930,21 +930,13 @@ Key observations at this stage:
 
 ### 5.5 Inspecting Span Attributes
 Click on individual spans to view their attributes:
+The flask-api parent span attributes include:
 
-![alt text](image-4.png)
-
-The Flask span attributes include:
-
-- `http.method`: POST
-- `http.route`: /register
-- `http.status_code`: 201
-- `http.url`: http://localhost:5000/register
+![alt text](image-20.png)
 
 The Celery span attributes include:
 
-- `celery.task_name`: app.tasks.send_welcome_email
-- `celery.action`: run
-- `celery.state`: SUCCESS
+![alt text](image-21.png)
 
 These attributes are added automatically by the instrumentors—no manual code required.
 
@@ -1288,7 +1280,7 @@ curl -X POST http://localhost:5000/reports/generate \
 
 Find the `celery-worker` trace in Grafana:
 
-![alt text](image-8.png)
+GG
 
 The Celery trace alone shows the bottleneck:
 
@@ -1495,7 +1487,7 @@ Set **Span Duration > 400ms** and click **Run query**.
 
 You should now see a **single trace** that contains spans from **both** services:
 
-![alt text](image-7.png)
+GG
 
 ```
 Unified Trace (Total: ~5700ms)
