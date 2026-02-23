@@ -32,30 +32,30 @@ def test_task(self):
         raise self.retry(exc=exc)  # A2
 
 
-@celery.task(
-    bind=True,
-    max_retries=3,
-    default_retry_delay=10,
-    time_limit=15,
-    soft_time_limit=12
-)
-def send_welcome_email(self, user_email):
-    """
-    Simulates sending a welcome email with timeout protection.
-    """
-    try:
-        logger.info(f"send_welcome_email: Starting for {user_email}")
-        time.sleep(5)
-        logger.info(f"send_welcome_email: Successfully sent to {user_email}")
-        return f"Email sent to {user_email}"
+# @celery.task(
+#     bind=True,
+#     max_retries=3,
+#     default_retry_delay=10,
+#     time_limit=15,
+#     soft_time_limit=12
+# )
+# def send_welcome_email(self, user_email):
+#     """
+#     Simulates sending a welcome email with timeout protection.
+#     """
+#     try:
+#         logger.info(f"send_welcome_email: Starting for {user_email}")
+#         time.sleep(5)
+#         logger.info(f"send_welcome_email: Successfully sent to {user_email}")
+#         return f"Email sent to {user_email}"
 
-    except SoftTimeLimitExceeded:  # A3
-        logger.warning(f"send_welcome_email: Soft time limit exceeded for {user_email}")
-        return {"status": "timeout", "message": "Email sending timed out"}
+#     except SoftTimeLimitExceeded:  # A3
+#         logger.warning(f"send_welcome_email: Soft time limit exceeded for {user_email}")
+#         return {"status": "timeout", "message": "Email sending timed out"}
 
-    except Exception as exc:
-        logger.error(f"send_welcome_email: Failed for {user_email} - {exc}")
-        raise self.retry(exc=exc)
+#     except Exception as exc:
+#         logger.error(f"send_welcome_email: Failed for {user_email} - {exc}")
+#         raise self.retry(exc=exc)
 
 
 @celery.task(
@@ -168,3 +168,65 @@ def slow_task(self, duration):
             "message": f"Task exceeded {self.soft_time_limit}s soft limit",
             "attempted_duration": duration
         }
+    
+
+from opentelemetry import trace
+
+tracer = trace.get_tracer(__name__)
+
+# logger = logging.getLogger(__name__)
+
+# ... existing task configuration ...
+
+@celery.task(bind=True, max_retries=3, default_retry_delay=5)
+def send_welcome_email(self, user_email):
+
+    # Custom span for email validation
+    with tracer.start_as_current_span("validate_email") as span:
+        span.set_attribute("email.address", user_email)
+        span.set_attribute("email.domain", user_email.split('@')[-1])
+
+        logger.info(f"send_welcome_email: Validating email {user_email}")
+        time.sleep(0.1)
+
+        if '@' not in user_email:
+            span.set_attribute("email.valid", False)
+            span.set_attribute("error", True)
+            raise ValueError("Invalid email format")
+
+        span.set_attribute("email.valid", True)
+
+    # Custom span for SMTP connection
+    with tracer.start_as_current_span("smtp_connect") as span:
+        span.set_attribute("smtp.server", "smtp.example.com")
+        span.set_attribute("smtp.port", 587)
+
+        logger.info(f"send_welcome_email: Connecting to SMTP server")
+        time.sleep(1)
+
+        span.set_attribute("smtp.connected", True)
+
+    # Custom span for sending the email
+    with tracer.start_as_current_span("send_email_message") as span:
+        span.set_attribute("email.to", user_email)
+        span.set_attribute("email.subject", "Welcome to Our Platform")
+
+        logger.info(f"send_welcome_email: Sending email to {user_email}")
+        time.sleep(3)
+
+        span.set_attribute("email.sent", True)
+        span.set_attribute("email.message_id", f"<{int(time.time())}@example.com>")
+
+    # Custom span for database update
+    with tracer.start_as_current_span("update_user_record") as span:
+        span.set_attribute("db.operation", "UPDATE")
+        span.set_attribute("db.table", "users")
+        span.set_attribute("user.email", user_email)
+
+        logger.info(f"send_welcome_email: Updating user record")
+        time.sleep(0.5)
+
+        span.set_attribute("db.rows_affected", 1)
+
+    logger.info(f"send_welcome_email: Successfully sent to {user_email}")
+    return f"Welcome email sent to {user_email}"

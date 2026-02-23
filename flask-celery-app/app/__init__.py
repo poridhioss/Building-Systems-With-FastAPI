@@ -3,7 +3,10 @@ from celery_utils import make_celery
 from config import Config
 import logging
 
-# NEW: Configure logging
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from opentelemetry.instrumentation.redis import RedisInstrumentor
+
+
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s',
@@ -14,8 +17,15 @@ def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
-    from app.routes import bp as routes_bp
-    app.register_blueprint(routes_bp)
+    # Auto-instrument Flask: creates spans for all HTTP requests
+    FlaskInstrumentor().instrument_app(app)
+
+    # Auto-instrument Redis: creates spans for all Redis operations
+    RedisInstrumentor().instrument()
+
+    # Register blueprints
+    from app.routes import bp
+    app.register_blueprint(bp)
 
     return app
 

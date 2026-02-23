@@ -19,26 +19,26 @@ def ping():
     }), 202
 
 
-@bp.route('/register', methods=['POST'])
-def register():
-    """User registration endpoint with background email."""
-    from app.tasks import send_welcome_email
+# @bp.route('/register', methods=['POST'])
+# def register():
+#     """User registration endpoint with background email."""
+#     from app.tasks import send_welcome_email
 
-    data = request.get_json()
-    user_email = data.get('email')
+#     data = request.get_json()
+#     user_email = data.get('email')
 
-    if not user_email:
-        logger.warning("Endpoint /register: Missing email parameter")
-        return jsonify({'error': 'Email is required'}), 400
+#     if not user_email:
+#         logger.warning("Endpoint /register: Missing email parameter")
+#         return jsonify({'error': 'Email is required'}), 400
 
-    logger.info(f"Endpoint /register: Queuing email task for {user_email}")
-    task = send_welcome_email.delay(user_email)
+#     logger.info(f"Endpoint /register: Queuing email task for {user_email}")
+#     task = send_welcome_email.delay(user_email)
 
-    return jsonify({
-        'message': 'User registered successfully',
-        'email': user_email,
-        'email_task_id': task.id
-    }), 201
+#     return jsonify({
+#         'message': 'User registered successfully',
+#         'email': user_email,
+#         'email_task_id': task.id
+#     }), 201
 
 
 @bp.route('/reports/generate', methods=['POST'])
@@ -136,3 +136,51 @@ def get_task_status(task_id):
 
     logger.info(f"Endpoint /tasks/{task_id}: State={task_result.state}")
     return jsonify(response), 200
+
+
+
+
+from opentelemetry import trace
+tracer = trace.get_tracer(__name__)
+
+@bp.route('/register', methods=['POST'])
+def register():
+
+    from app.tasks import send_welcome_email
+
+    data = request.get_json()
+    email = data.get('email')
+
+    # Custom span for input validation
+    with tracer.start_as_current_span("validate_request") as span:
+        span.set_attribute("request.email", email)
+
+        if not email:
+            span.set_attribute("validation.failed", True)
+            span.set_attribute("validation.error", "Email is required")
+            return jsonify({"error": "Email is required"}), 400
+
+        span.set_attribute("validation.passed", True)
+
+    # Custom span for task queuing
+    with tracer.start_as_current_span("queue_email_task") as span:
+        span.set_attribute("task.name", "send_welcome_email")
+        span.set_attribute("task.args", email)
+
+        logger.info(f"Endpoint /register: Queuing email task for {email}")
+        result = send_welcome_email.delay(email)
+
+        span.set_attribute("task.id", result.id)
+        span.set_attribute("task.state", result.state)
+
+    # Custom span for response construction
+    with tracer.start_as_current_span("build_response") as span:
+        response_data = {
+            "message": "User registered. Welcome email is being sent in the background.",
+            "task_id": result.id
+        }
+        span.set_attribute("response.status_code", 201)
+        span.set_attribute("response.task_id", result.id)
+
+    logger.info(f"Endpoint /register: Returned task_id {result.id}")
+    return jsonify(response_data), 201
