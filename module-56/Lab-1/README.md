@@ -862,12 +862,12 @@ From a fourth terminal, send a registration request:
 ```bash
 curl -X POST http://localhost:5000/register \
   -H "Content-Type: application/json" \
-  -d '{"email": "alice@example.com"}'
+  -d '{"email": "bob@example.com"}'
 ```
 
 Expected response:
 
-![alt text](image-11.png)
+![alt text](image-16.png)
 
 Wait 5 seconds for the `send_welcome_email` task to complete.
 
@@ -906,29 +906,17 @@ In the query section, click the **Search** tab. To filter out the noisy Celery h
 
 You will see **two separate traces** in the results table — one from `flask-api` and one from `celery-worker`. Each has a **different Trace ID**:
 
-GG
+![alt text](image-17.png)
 
 Click on each trace to inspect it separately:
 
 **Flask trace (`flask-api`):**
 
-GG
-
-```
-Trace: ea6870... (Total: ~554ms)
-└─ POST /register [flask-api] ───────────────── 554ms
-   ├─ Redis RPUSH (queue task) ────────────────── 10ms
-   └─ Return HTTP 201 ──────────────────────────── 5ms
-```
+![alt text](image-19.png)
 
 **Celery trace (`celery-worker`):**
 
-
-```
-Trace: daf78a... (Total: ~4610ms)
-└─ run/app.tasks.send_welcome_email [celery-worker] ── 4610ms
-   └─ time.sleep(5) ───────────────────────────────────── 5000ms
-```
+![alt text](image-18.png)
 
 **Why are these separate?** Trace context propagation between Flask and Celery is NOT yet implemented. Flask creates one Trace ID, Celery creates a completely different one. They appear as two unrelated traces in Grafana. Chapter 7 explains why this happens, and Chapter 8 implements the fix to link them into a single unified trace.
 
@@ -941,7 +929,6 @@ Key observations at this stage:
 5. **Timing breakdown**: Each span's duration is visible within its respective trace
 
 ### 5.5 Inspecting Span Attributes
-
 Click on individual spans to view their attributes:
 
 ![alt text](image-4.png)
@@ -1124,6 +1111,12 @@ curl -X POST http://localhost:5000/register \
   -H "Content-Type: application/json" \
   -d '{"email": "alice@example.com"}'
 ```
+
+Expected response:
+
+![alt text](image-11.png)
+
+Wait 5 seconds for the `send_welcome_email` task to complete.
 
 In Grafana, find the new traces. Since propagation is not yet implemented, you will see two separate traces — one for each service. But now each trace contains detailed custom span breakdowns:
 
