@@ -8,6 +8,76 @@ This lab teaches you to implement distributed tracing for a Flask-Celery applica
 
 The tracing system adds two new components—Grafana Tempo and Grafana—alongside the existing Flask-Celery-Redis infrastructure:
 
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                         Client (curl)                            │
+└────────────────────────┬─────────────────────────────────────────┘
+                         │
+                         │ HTTP POST /register
+                         │ (Request with Trace ID)
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              Flask Application (Port 5000)                       │
+│              Instrumented with OpenTelemetry                     │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────┐    │
+│  │  Root Span: POST /register                             │    │
+│  │  ├─ Span: Validate input                               │    │
+│  │  ├─ Span: Redis RPUSH (queue task)                     │    │
+│  │  └─ Span: Return HTTP 201                              │    │
+│  └────────────────────────────────────────────────────────┘    │
+│                                                                  │
+│  Sends spans via OTLP HTTP ──────────────────────┐              │
+└──────────────────────────────────────────────────┼──────────────┘
+                         │                         │
+                         │ Queue task              │
+                         ▼                         │
+┌─────────────────────────────────────────────────┼──────────────┐
+│              Redis (Port 6379)                   │              │
+│              Broker + Result Backend             │              │
+└──────────────────────┬───────────────────────────┼──────────────┘
+                       │                           │
+                       │ Poll for tasks            │
+                       ▼                           │
+┌─────────────────────────────────────────────────┼──────────────┐
+│         Celery Worker (Background Process)       │              │
+│         Instrumented with OpenTelemetry          │              │
+│                                                  │              │
+│  ┌────────────────────────────────────────────┐ │              │
+│  │  Child Span: send_welcome_email            │ │              │
+│  │  ├─ Span: Simulate network delay (5s)     │ │              │
+│  │  └─ Span: Return result                   │ │              │
+│  └────────────────────────────────────────────┘ │              │
+│                                                  │              │
+│  Sends spans via OTLP HTTP ──────────────────────┘              │
+└─────────────────────────────────────────────────────────────────┘
+                                                  │
+                                                  │ OTLP HTTP Export
+                                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              Grafana Tempo (Port 4318)                           │
+│              Trace Storage Backend                               │
+│                                                                  │
+│  Stores traces with:                                             │
+│  - Trace ID: abc-123                                             │
+│  - All spans from Flask and Celery                               │
+│  - Span relationships (parent-child)                             │
+│  - Span attributes (user_id, email, etc.)                        │
+└────────────────────────┬─────────────────────────────────────────┘
+                         │
+                         │ Query traces via HTTP API
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              Grafana (Port 3000)                                 │
+│              Trace Visualization UI                              │
+│                                                                  │
+│  Displays:                                                       │
+│  - Complete trace timeline (Flask → Celery)                      │
+│  - Span duration breakdown                                       │
+│  - Span attributes and metadata                                  │
+│  - Service dependency graph                                      │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 **Key Flow:**
 
@@ -178,10 +248,6 @@ The key relationship: **One Trace ID spans multiple services. One service genera
 The word "distributed" in distributed tracing means a single Trace ID follows a request as it moves from one process to another. This requires **trace context propagation** — the mechanism that passes the Trace ID from Flask to Celery.
 
 Here is the complete lifecycle of a Trace ID for a single registration request:
-
-![alt text](images/archi-diagrams/mod-56_trace-context-propagation.drawio.svg)
-
-The same lifecycle in step-by-step detail:
 
 ```
 1. Client sends POST /register
@@ -552,12 +618,10 @@ The `_configured` guard prevents double-configuration. This is critical because 
 
 Four components work together in this configuration:
 
-![alt text](images/archi-diagrams/mod-56_otel-config-module.drawio.svg)
-
-- **Resource** — Metadata identifying the service generating traces (name, version, environment). Attached to the TracerProvider so every span carries this identity.
-- **TracerProvider** — Factory that creates **Tracers**. A Tracer is the object your code calls (`tracer.start_as_current_span(...)`) to create spans. When a Tracer creates the **first span** of a request (the root span), the SDK generates a **new Trace ID**. Every subsequent child span created within that request inherits the same Trace ID. So the TracerProvider does not generate Trace IDs directly — it creates Tracers, which create spans, and the Trace ID is assigned at root-span creation time.
-- **BatchSpanProcessor** — Receives completed spans from the TracerProvider, collects them into batches over a time window, then forwards the batch. This reduces network overhead compared to sending each span individually.
-- **OTLPSpanExporter** — Sends batched spans to Tempo via HTTP POST to `localhost:4318/v1/traces`.
+- **Resource** — Metadata identifying the service generating traces (name, version, environment)
+- **TracerProvider** — Factory that creates tracers for generating spans
+- **OTLPSpanExporter** — Sends spans to Tempo via HTTP
+- **BatchSpanProcessor** — Batches spans before export, reducing network overhead compared to sending each span individually
 
 ### 3.3 Prediction Exercise
 
@@ -693,8 +757,6 @@ if __name__ == '__main__':
 ### 4.4 Understanding the Import Order
 
 The import order is critical for correct service naming. Here is what happens in each process:
-
-![alt text](images/archi-diagrams/mod-56_instrumentation-and-import-order.drawio.svg)
 
 **Flask process (`python run.py`):**
 
@@ -1111,8 +1173,6 @@ OpenTelemetry auto-instrumentation propagates trace context automatically for **
 
 Flask-to-Celery communication does **not** use HTTP. The flow is:
 
-![alt text](images/archi-diagrams/mod-56_broken-propagation.drawio.svg)
-
 ```
 Flask process → Redis RPUSH (task message) → Celery worker BRPOP (picks up message)
 ```
@@ -1440,8 +1500,6 @@ if __name__ == '__main__':
 ### 8.3 Understanding the Signal Flow
 
 With both handlers in place, the propagation flow is:
-
-![alt text](images/archi-diagrams/mod-56_full-propagation-signal-flow.drawio.svg)
 
 ```
 1. Flask receives POST /register
