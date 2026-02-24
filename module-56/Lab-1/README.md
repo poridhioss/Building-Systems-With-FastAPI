@@ -8,6 +8,7 @@ This lab teaches you to implement distributed tracing for a Flask-Celery applica
 
 The tracing system adds two new components—Grafana Tempo and Grafana—alongside the existing Flask-Celery-Redis infrastructure:
 
+![alt text](images/archi-diagrams/mod-56_high-level.drawio.svg)
 
 **Key Flow:**
 
