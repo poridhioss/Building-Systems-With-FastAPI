@@ -239,7 +239,20 @@ Verify your understanding before proceeding:
 
 The tracing infrastructure requires two new services: Grafana Tempo to store traces, and Grafana to visualize them. Both run as Docker containers alongside the existing Redis service.
 
-### 2.1 Updating Docker Compose
+### 2.1 Think First: Observability Infrastructure
+
+The application currently uses Redis as a message broker. Tracing adds two new services to the stack.
+
+**Question:** What role does each new service play? Which service receives raw trace data from the application, and which one provides the query and visualization interface?
+
+<details>
+<summary>Click to review</summary>
+
+Grafana Tempo receives raw trace data via the OTLP protocol and stores it. Grafana provides the UI for querying and visualizing traces stored in Tempo. The application never sends data directly to Grafana — it sends spans to Tempo, and Grafana queries Tempo to display them.
+
+</details>
+
+### 2.2 Updating Docker Compose
 
 Update `docker-compose.yml` to include Tempo and Grafana:
 
@@ -293,7 +306,7 @@ volumes:
 
 The Tempo service listens on port 4318 for OTLP HTTP trace data and port 3200 for its HTTP API. Grafana connects to Tempo via the internal Docker network. Anonymous authentication is enabled for development—production deployments require proper authentication.
 
-### 2.2 Configuring Tempo
+### 2.3 Configuring Tempo
 
 Create the Tempo configuration file `tempo-config.yaml`:
 
@@ -323,7 +336,7 @@ This configuration sets up:
 - **Local storage** for trace data (suitable for development; use S3/GCS in production)
 - **Write-Ahead Log (WAL)** for durability during restarts
 
-### 2.3 Configuring the Grafana Datasource
+### 2.4 Configuring the Grafana Datasource
 
 Create the Grafana datasource configuration `grafana-datasources.yaml`:
 
@@ -342,7 +355,7 @@ datasources:
 
 This file auto-provisions Tempo as the default tracing datasource when Grafana starts.
 
-### 2.4 Starting the Stack
+### 2.5 Starting the Stack
 
 Start all containers:
 
@@ -358,7 +371,7 @@ docker ps
 
 Expected output shows three containers: `flask-celery-redis`, `tempo`, and `grafana`.
 
-### 2.5 Accessing Grafana using Poridhi's Load Balancer
+### 2.6 Accessing Grafana using Poridhi's Load Balancer
 
 To access Grafana through Poridhi's Load Balancer, first find your wt0 IP address by running `ifconfig` and looking for the `wt0` interface. Note the IP address (something like `100.125.246.186`).
 
@@ -381,7 +394,7 @@ Click **Explore** (compass icon in the left sidebar), then select **Tempo** as t
 
 ![alt text](./images/image-4.png)
 
-### 2.6 Checkpoint
+### 2.7 Checkpoint
 
 Before proceeding, verify:
 
@@ -450,7 +463,7 @@ EOF
 
 ### 3.2 Creating the OpenTelemetry Configuration Module
 
-Create a new file `otel_config.py` to centralize tracing configuration:
+Create a new file `otel_config.py` to centralize tracing configuration. Complete the blanks below:
 
 ```python
 from opentelemetry import trace
@@ -472,7 +485,7 @@ def configure_opentelemetry(service_name: str):
 
     # Create a resource identifying this service in traces
     resource = Resource(attributes={
-        SERVICE_NAME: service_name
+        ___: service_name  # Q1: What constant identifies the service name attribute?
     })
 
     # Create a tracer provider with the resource
@@ -480,12 +493,12 @@ def configure_opentelemetry(service_name: str):
 
     # Configure OTLP HTTP exporter pointing to Tempo
     otlp_exporter = OTLPSpanExporter(
-        endpoint="http://localhost:4318/v1/traces",
+        endpoint="___",  # Q2: What URL does Tempo listen on for OTLP HTTP? (Hint: port 4318)
         timeout=10
     )
 
     # Batch spans before sending for efficiency
-    span_processor = BatchSpanProcessor(otlp_exporter)
+    span_processor = ___(otlp_exporter)  # Q3: What processor batches spans before export?
     provider.add_span_processor(span_processor)
 
     # Set as the global tracer provider
@@ -495,6 +508,28 @@ def configure_opentelemetry(service_name: str):
     print(f"OpenTelemetry configured for service: {service_name}")
     print(f"Exporting traces to: http://localhost:4318/v1/traces")
 ```
+
+<details>
+<summary>Reveal completed code</summary>
+
+- **Q1:** `SERVICE_NAME` — imported from `opentelemetry.sdk.resources`, this constant maps to the `service.name` resource attribute
+- **Q2:** `http://localhost:4318/v1/traces` — Tempo listens on port 4318 for OTLP HTTP, with `/v1/traces` as the trace ingestion path
+- **Q3:** `BatchSpanProcessor` — collects spans into batches before forwarding to the exporter, reducing network overhead
+
+```python
+resource = Resource(attributes={
+    SERVICE_NAME: service_name
+})
+
+otlp_exporter = OTLPSpanExporter(
+    endpoint="http://localhost:4318/v1/traces",
+    timeout=10
+)
+
+span_processor = BatchSpanProcessor(otlp_exporter)
+```
+
+</details>
 
 The `_configured` guard prevents double-configuration. This is critical because when `worker.py` imports the Flask app, the app module would otherwise try to reconfigure OpenTelemetry with a different service name, overriding or conflicting with the worker's configuration.
 
@@ -507,7 +542,36 @@ Four components work together in this configuration:
 - **BatchSpanProcessor** — Receives completed spans from the TracerProvider, collects them into batches over a time window, then forwards the batch. This reduces network overhead compared to sending each span individually.
 - **OTLPSpanExporter** — Sends batched spans to Tempo via HTTP POST to `localhost:4318/v1/traces`.
 
-### 3.3 Prediction Exercise
+### 3.3 Matching Exercise: OTel Pipeline Components
+
+Match each component to what it does in the tracing pipeline:
+
+| Component | Role (A-D) |
+|-----------|------------|
+| Resource | ___ |
+| TracerProvider | ___ |
+| BatchSpanProcessor | ___ |
+| OTLPSpanExporter | ___ |
+
+**Options:**
+- A: Collects completed spans into batches before forwarding
+- B: Creates Tracers that generate spans with Trace IDs
+- C: Sends batched span data to Tempo over HTTP
+- D: Attaches service identity metadata to every span
+
+<details>
+<summary>Reveal answers</summary>
+
+| Component | Role |
+|-----------|------|
+| Resource | **D** — Carries `service.name` and other metadata on every span |
+| TracerProvider | **B** — Factory for Tracers; Trace IDs are generated when Tracers create root spans |
+| BatchSpanProcessor | **A** — Buffers spans and forwards them in batches to reduce network calls |
+| OTLPSpanExporter | **C** — Transmits span batches to Tempo via OTLP HTTP at `localhost:4318/v1/traces` |
+
+</details>
+
+### 3.4 Prediction Exercise
 
 The configuration uses `BatchSpanProcessor` rather than sending each span immediately.
 
@@ -522,7 +586,7 @@ Batching collects spans over a time window (default 5 seconds) or until a batch 
 
 </details>
 
-### 3.4 Checkpoint
+### 3.5 Checkpoint
 
 Verify your understanding:
 
@@ -585,12 +649,29 @@ from app import tasks
 
 ### 4.2 Creating the Flask Entry Point
 
-Update `run.py` to configure OpenTelemetry BEFORE importing the app:
+Update `run.py` to configure OpenTelemetry BEFORE importing the app. Complete the blanks:
 
 ```python
 from otel_config import configure_opentelemetry
 
 # Configure OpenTelemetry FIRST, before any app imports
+configure_opentelemetry(service_name="___")  # Q1: What service name identifies Flask in Grafana?
+
+___  # Q2: What import statement brings in the Flask app? (Hint: which module and object?)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=False)
+```
+
+<details>
+<summary>Reveal completed code</summary>
+
+- **Q1:** `flask-api` — this name appears in Grafana as the service that handled HTTP requests
+- **Q2:** `from app import app` — this import MUST come after `configure_opentelemetry` because it triggers `FlaskInstrumentor` in `app/__init__.py`
+
+```python
+from otel_config import configure_opentelemetry
+
 configure_opentelemetry(service_name="flask-api")
 
 from app import app
@@ -598,6 +679,8 @@ from app import app
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
 ```
+
+</details>
 
 **Critical: The call to `configure_opentelemetry` MUST come before `from app import app`.** When Python executes `from app import app`, it runs all module-level code in `app/__init__.py`, including `FlaskInstrumentor().instrument_app(app)`. The instrumentor attaches to whatever TracerProvider is currently set. If no provider is set yet, the instrumentor uses a no-op provider and **Flask spans are silently discarded** — this is the most common reason for missing Flask traces in Grafana.
 
@@ -607,30 +690,53 @@ if __name__ == '__main__':
 
 **Important:** You must create a separate `worker.py` file to properly instrument the Celery worker with the correct service name. Using `celery -A app.celery worker` will use the Flask app's configuration and show the wrong service name.
 
-Create a new file `worker.py` to run the Celery worker with OpenTelemetry:
+Create a new file `worker.py` to run the Celery worker with OpenTelemetry. Complete the blanks:
 
 ```python
 from otel_config import configure_opentelemetry
 
 # Step 1: Configure OpenTelemetry for the Celery worker service FIRST
-configure_opentelemetry(service_name="celery-worker")
+configure_opentelemetry(service_name="___")  # Q1: What service name distinguishes the worker from Flask?
 
 # Step 2: Import celery instance (this triggers create_app() in app/__init__.py)
 from app import celery
 
 # Step 3: Instrument Celery AFTER the celery app exists
-# CeleryInstrumentor hooks into Celery signals (task_prerun, task_postrun, etc.)
-# These signals must be connected after the celery app is imported.
+from opentelemetry.instrumentation.celery import CeleryInstrumentor
+___  # Q2: What call instruments the Celery app? (Hint: same pattern as FlaskInstrumentor)
+
+if __name__ == '__main__':
+    celery.___([  # Q3: What method starts the worker without CLI argument parsing?
+        'worker',
+        '--loglevel=info'
+    ])
+```
+
+<details>
+<summary>Reveal completed code</summary>
+
+- **Q1:** `celery-worker` — a distinct name from `flask-api` so Grafana can separate spans by service
+- **Q2:** `CeleryInstrumentor().instrument()` — hooks into Celery signals to create spans around task execution
+- **Q3:** `worker_main` — unlike `start()`, this method does not parse command-line arguments
+
+```python
+from otel_config import configure_opentelemetry
+
+configure_opentelemetry(service_name="celery-worker")
+
+from app import celery
+
 from opentelemetry.instrumentation.celery import CeleryInstrumentor
 CeleryInstrumentor().instrument()
 
 if __name__ == '__main__':
-    # worker_main() starts the worker directly without CLI argument parsing
     celery.worker_main([
         'worker',
         '--loglevel=info'
     ])
 ```
+
+</details>
 
 `CeleryInstrumentor` creates spans when tasks execute, capturing task name, arguments, duration, and result status.
 
@@ -700,7 +806,20 @@ Verify your instrumentation:
 
 With instrumentation in place, start the application and generate traces to verify the tracing pipeline works end to end.
 
-### 5.1 Starting the Instrumented Application
+### 5.1 Think First: Expected Trace Behavior
+
+Before starting the application and viewing traces, consider what you expect to see.
+
+**Question:** When a `POST /register` request triggers `send_welcome_email.delay()`, will the Flask HTTP span and the Celery task span appear in the same trace or in separate traces? Why?
+
+<details>
+<summary>Click to review</summary>
+
+They will appear as **separate traces** with different Trace IDs. At this point, no trace context propagation exists between Flask and Celery. The Flask process creates a trace when it handles the HTTP request, and the Celery worker creates an independent trace when it executes the task. Each process has its own TracerProvider that generates its own Trace IDs. Connecting them requires explicit propagation, which is implemented in Chapter 8.
+
+</details>
+
+### 5.2 Starting the Instrumented Application
 
 Open four terminals.
 
@@ -741,7 +860,7 @@ The worker output should include:
 
 **Critical:** The service name must show ONLY `celery-worker`. You should NOT see `flask-api` in the worker logs. If you see both service names, your `worker.py` imports are in the wrong order.
 
-### 5.2 Triggering a Request
+### 5.3 Triggering a Request
 
 From a fourth terminal, send a registration request:
 
@@ -757,7 +876,7 @@ Expected response:
 
 Wait 5 seconds for the `send_welcome_email` task to complete.
 
-### 5.3 Understanding Worker Background Traces
+### 5.4 Understanding Worker Background Traces
 
 Before viewing the registration trace, note that you may already see multiple traces from the `celery-worker` service in Grafana. These include Redis operations like PUBLISH, LLEN, SADD, PING, SREM, and DEL. These are **Celery's internal heartbeat and queue management operations** — they are normal.
 
@@ -774,7 +893,7 @@ The `RedisInstrumentor` captures ALL Redis commands in the worker process, inclu
 
 These traces appear every few seconds regardless of whether you send requests. To filter them out in Grafana, set **Span Duration > 100ms** to focus on meaningful task execution traces.
 
-### 5.4 Viewing Traces in Grafana
+### 5.5 Viewing Traces in Grafana
 
 Open Grafana in your browser via the Load Balancer URL.
 
@@ -789,6 +908,15 @@ In the query section, click the **Search** tab. To filter out the noisy Celery h
 **Common mistake:** Do NOT set "Span Name" to "celery-worker" or "flask-api" — these are service names, not span names. Applying incorrect filters will hide traces from one of the services.
 
 
+
+**Predict:** Before looking at the results, answer: Will the Flask and Celery spans share the same Trace ID or have different Trace IDs? How many total traces do you expect to see?
+
+<details>
+<summary>Click to verify</summary>
+
+Two separate traces with **different Trace IDs**. Flask and Celery run as independent processes, each with its own TracerProvider. Without explicit propagation (implemented in Chapter 8), they have no way to share context.
+
+</details>
 
 You will see **two separate traces** in the results table — one from `flask-api` and one from `celery-worker`. Each has a **different Trace ID**:
 
@@ -814,7 +942,7 @@ Key observations at this stage:
 4. **Celery trace is slow** (~4.6s) — it executes the actual work
 5. **Timing breakdown**: Each span's duration is visible within its respective trace
 
-### 5.5 Inspecting Span Attributes
+### 5.6 Inspecting Span Attributes
 Click on individual spans to view their attributes:
 The flask-api parent span attributes include:
 
@@ -826,7 +954,7 @@ The Celery span attributes include:
 
 These attributes are added automatically by the instrumentors—no manual code required.
 
-### 5.6 Checkpoint
+### 5.7 Checkpoint
 
 Verify your tracing pipeline:
 
@@ -844,7 +972,20 @@ Verify your tracing pipeline:
 
 Auto-instrumentation captures framework-level operations (HTTP requests, Redis commands, task execution), but it does not capture business logic. Custom spans provide visibility into specific operations within your code.
 
-### 6.1 Custom Spans in Celery Tasks
+### 6.1 Think First: Gaps in Auto-Instrumentation
+
+The current traces show HTTP requests, Redis commands, and Celery task execution — but nothing about what happens *inside* a task.
+
+**Question:** The `send_welcome_email` task validates the email, connects to an SMTP server, sends the message, and updates a database record. If the task takes 8 seconds, which step is the bottleneck? Can you answer this with auto-instrumentation alone?
+
+<details>
+<summary>Click to review</summary>
+
+With auto-instrumentation alone, the Celery task appears as a single span covering the entire 8-second duration. There is no way to determine which step — validation, SMTP connection, sending, or database update — consumed the most time. Custom spans break the task into measurable sub-operations, making the bottleneck visible in the trace timeline.
+
+</details>
+
+### 6.2 Custom Spans in Celery Tasks
 
 Update `app/tasks.py` to add custom spans that measure each step of the email sending process:
 
@@ -919,7 +1060,7 @@ def send_welcome_email(self, user_email):
 
 Each `tracer.start_as_current_span()` call creates a nested span within the parent `send_welcome_email` span. Custom attributes attached to each span provide metadata for debugging and filtering—email addresses, SMTP server details, database operations.
 
-### 6.2 Custom Spans in Flask Routes
+### 6.3 Custom Spans in Flask Routes
 
 Update `app/routes.py` to add custom spans to the API layer:
 
@@ -978,7 +1119,7 @@ def register():
 # ... other routes remain the same ...
 ```
 
-### 6.3 Testing Custom Spans
+### 6.4 Testing Custom Spans
 
 Restart the Flask application and Celery worker to pick up the changes.
 
@@ -995,6 +1136,15 @@ Expected response:
 ![alt text](./images/image-11.png)
 
 Wait 5 seconds for the `send_welcome_email` task to complete.
+
+**Predict:** The `send_welcome_email` task has four custom spans: `validate_email` (0.1s sleep), `smtp_connect` (1s sleep), `send_email_message` (3s sleep), and `update_user_record` (0.5s sleep). Which custom span will have the longest duration bar in the Grafana timeline?
+
+<details>
+<summary>Click to verify</summary>
+
+`send_email_message` — its 3-second `time.sleep()` makes it the longest operation. In the trace timeline, this span will visually dominate the Celery portion, immediately identifying email delivery as the bottleneck. This is exactly the kind of insight that auto-instrumentation alone cannot provide.
+
+</details>
 
 In Grafana, find the new traces. Since propagation is not yet implemented, you will see two separate traces — one for each service. But now each trace contains detailed custom span breakdowns:
 
@@ -1017,7 +1167,7 @@ Click on the `send_email_message` span to view custom attributes:
 
 If an email fails to send, these attributes immediately reveal which step failed (SMTP connection? Email delivery? Database update?), the exact error, and how long each step took before the failure.
 
-### 6.4 Checkpoint
+### 6.5 Checkpoint
 
 Verify your custom instrumentation:
 
@@ -1210,7 +1360,7 @@ Total: 235ms
 
 The `users` database query consumes 64% of the total time—the optimization target is immediately clear. -->
 
-### 7.7 Checkpoint
+### 7.6 Checkpoint
 
 Verify your understanding of trace propagation:
 
@@ -1228,7 +1378,20 @@ Verify your understanding of trace propagation:
 
 Chapter 7 explained why Flask and Celery traces are disconnected and what propagation requires conceptually. This chapter implements the fix using Celery signals and OpenTelemetry's propagation API.
 
-### 8.1 Adding the Injection Signal Handler
+### 8.1 Think First: Propagation Mechanics
+
+Propagation requires two operations: injection (Flask side) and extraction (Celery side). Two Celery signals — `before_task_publish` and `task_prerun` — provide the hooks.
+
+**Question:** Which signal fires in which process? Why can't both operations happen in the same process?
+
+<details>
+<summary>Click to review</summary>
+
+`before_task_publish` fires in the **Flask process** when `.delay()` is called — this is where the current trace context exists and needs to be serialized into the task message headers. `task_prerun` fires in the **Celery worker process** just before a task executes — this is where the serialized context needs to be deserialized and activated. Both operations cannot happen in the same process because Flask and Celery run as separate OS processes with separate memory spaces. The trace context must be serialized, transmitted through Redis as part of the task message, and then deserialized on the other side.
+
+</details>
+
+### 8.2 Adding the Injection Signal Handler
 
 The `before_task_publish` signal fires in the **Flask process** whenever a task is about to be sent to Redis. This is where the current trace context gets injected into the task message headers.
 
@@ -1254,7 +1417,7 @@ When `propagate.inject(headers)` is called, OpenTelemetry does the following:
 
 The `headers` dictionary is the task message's header map — part of the Celery message protocol. When the task is serialized and pushed to Redis via RPUSH, these headers travel with it as metadata. If no active span exists (e.g., `propagate.inject()` is called outside a request context), it writes nothing — the headers dictionary remains unchanged, and the worker will generate a new Trace ID as usual.
 
-Update `app/__init__.py` to add the signal handler:
+Update `app/__init__.py` to add the signal handler. The new code at the bottom of the file is the injection logic — complete the blanks:
 
 ```python
 from flask import Flask
@@ -1297,20 +1460,34 @@ app = create_app()
 celery = make_celery(app)
 
 # --- Trace Context Propagation: Injection ---
-# This signal fires in the FLASK process before a task message is sent to Redis.
-# It injects the current trace context (Trace ID + Span ID) into the task headers.
+@___.connect  # Q1: Which Celery signal fires BEFORE a task is sent to Redis?
+def inject_trace_context(headers=None, **kwargs):
+    if headers is None:
+        headers = {}
+    propagate.___(headers)  # Q2: inject or extract? (Hint: Flask is the sender)
+
+from app import tasks
+```
+
+<details>
+<summary>Reveal completed code</summary>
+
+- **Q1:** `before_task_publish` — this signal fires in the Flask process when `.delay()` is called, before the task message is serialized and pushed to Redis
+- **Q2:** `inject` — the Flask process is injecting (writing) the current trace context into the outgoing task headers
+
+```python
 @before_task_publish.connect
 def inject_trace_context(headers=None, **kwargs):
     if headers is None:
         headers = {}
     propagate.inject(headers)
-
-from app import tasks
 ```
+
+</details>
 
 **What changed:** Two new imports (`propagate`, `before_task_publish`) and a signal handler function `inject_trace_context`. When Flask calls `send_welcome_email.delay(email)`, this handler fires automatically and writes the `traceparent` header into the task message before it enters Redis.
 
-### 8.2 Adding the Extraction Signal Handler
+### 8.3 Adding the Extraction Signal Handler
 
 The `task_prerun` signal fires in the **Celery worker process** just before a task executes. This is where the trace context gets extracted from the task headers and set as the active context.
 
@@ -1332,7 +1509,7 @@ When the worker picks up a task from Redis, the task message includes headers �
 
 Both steps are required. If you call `propagate.extract()` without `context.attach()`, the trace context is parsed but never activated — the worker still creates an independent trace. If you call `context.attach()` with an empty context, nothing changes — the worker still creates an independent trace.
 
-Update `worker.py`:
+Update `worker.py` with the extraction logic. Complete the blanks in the signal handler:
 
 ```python
 from otel_config import configure_opentelemetry
@@ -1347,8 +1524,31 @@ from celery.signals import task_prerun
 CeleryInstrumentor().instrument()
 
 # --- Trace Context Propagation: Extraction ---
-# This signal fires in the CELERY WORKER process before a task executes.
-# It extracts the trace context from the task headers and sets it as the active context.
+@___.connect  # Q1: Which Celery signal fires BEFORE a task executes in the worker?
+def extract_trace_context(sender=None, **kwargs):
+    task = sender
+    if task and hasattr(task.request, 'get'):
+        headers = task.request.get('headers') or {}
+    else:
+        headers = {}
+    ctx = propagate.___(headers)  # Q2: inject or extract? (Hint: the worker is the receiver)
+    context.___(ctx)  # Q3: What call activates the extracted context for this thread?
+
+if __name__ == '__main__':
+    celery.worker_main([
+        'worker',
+        '--loglevel=info'
+    ])
+```
+
+<details>
+<summary>Reveal completed code</summary>
+
+- **Q1:** `task_prerun` — fires in the worker process just before a task's `run()` method executes
+- **Q2:** `extract` — the worker is extracting (reading) the trace context from the incoming task headers
+- **Q3:** `attach` — without `context.attach()`, the extracted context exists in memory but is never activated, and the worker would still generate a new Trace ID
+
+```python
 @task_prerun.connect
 def extract_trace_context(sender=None, **kwargs):
     task = sender
@@ -1358,17 +1558,13 @@ def extract_trace_context(sender=None, **kwargs):
         headers = {}
     ctx = propagate.extract(headers)
     context.attach(ctx)
-
-if __name__ == '__main__':
-    celery.worker_main([
-        'worker',
-        '--loglevel=info'
-    ])
 ```
 
-**What changed:** Two new imports (`context`, `propagate`, `task_prerun`) and a signal handler function `extract_trace_context`. When the worker picks up a task, this handler reads the `traceparent` header from the task message, parses the Trace ID and parent Span ID, and makes it the active context. All subsequent spans in this task will inherit the Flask Trace ID.
+</details>
 
-### 8.3 Understanding the Signal Flow
+**What changed:** Three new imports (`context`, `propagate`, `task_prerun`) and a signal handler function `extract_trace_context`. When the worker picks up a task, this handler reads the `traceparent` header from the task message, parses the Trace ID and parent Span ID, and makes it the active context. All subsequent spans in this task will inherit the Flask Trace ID.
+
+### 8.4 Understanding the Signal Flow
 
 With both handlers in place, the propagation flow is:
 
@@ -1398,7 +1594,7 @@ With both handlers in place, the propagation flow is:
    → Same Trace ID → unified trace
 ``` -->
 
-### 8.4 Verifying Propagation
+### 8.5 Verifying Propagation
 
 Restart both the Flask application and the Celery worker to pick up the changes:
 
@@ -1420,6 +1616,15 @@ curl -X POST http://localhost:5000/register \
 
 Wait 10 seconds for spans to flush, then open Grafana → Explore → Tempo.
 
+**Predict:** In Chapters 5 and 6, the same request produced two separate traces with different Trace IDs. After adding the injection and extraction handlers, how many traces will this request produce? Will the Flask and Celery spans share the same Trace ID?
+
+<details>
+<summary>Click to verify</summary>
+
+One single trace. The `before_task_publish` handler in Flask injected the Trace ID into the task message headers, and the `task_prerun` handler in the worker extracted and activated it. Both services now share the same Trace ID, so Grafana merges their spans into a unified timeline.
+
+</details>
+
 Set **Span Duration > 410ms** and click **Run query**.
 
 You should now see a **single trace** that contains spans from **both** services:
@@ -1439,7 +1644,7 @@ If you still see two separate traces, check:
 - Is the `task_prerun` handler in `worker.py`?
 - Check Flask terminal output for import errors
 
-### 8.5 Checkpoint
+### 8.6 Checkpoint
 
 Verify trace context propagation is working:
 
@@ -1449,13 +1654,79 @@ Verify trace context propagation is working:
 - [ ] The Celery task span's `parent_span_id` references the Flask HTTP span
 - [ ] Custom spans (from Chapter 6) still appear nested within their respective service spans
 
+### 8.7 Experiment: Breaking Propagation
+
+This experiment demonstrates what happens when propagation fails. It reinforces why both `inject` and `extract` are required.
+
+**Step 1:** In `worker.py`, comment out the two lines inside the `extract_trace_context` handler:
+
+```python
+@task_prerun.connect
+def extract_trace_context(sender=None, **kwargs):
+    task = sender
+    if task and hasattr(task.request, 'get'):
+        headers = task.request.get('headers') or {}
+    else:
+        headers = {}
+    # ctx = propagate.extract(headers)   # <-- commented out
+    # context.attach(ctx)                 # <-- commented out
+```
+
+**Step 2:** Restart the Celery worker:
+
+```bash
+python worker.py
+```
+
+**Step 3:** Send a request:
+
+```bash
+curl -X POST http://localhost:5000/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "broken-propagation@example.com"}'
+```
+
+**Step 4:** Check Grafana. Set **Span Duration > 410ms** and run the query.
+
+**Observe:** The trace is split back into two separate traces with different Trace IDs — exactly the behavior from Chapter 5. The injection handler in Flask still writes the `traceparent` header into the task message, but without extraction and attachment on the worker side, the worker ignores it and generates its own Trace ID.
+
+**Question:** What would happen if you did the opposite — kept extraction but removed injection (commented out `propagate.inject(headers)` in `app/__init__.py`)?
+
+<details>
+<summary>Click to review</summary>
+
+The extraction handler would read the task headers, but since `propagate.inject()` never wrote a `traceparent` header, the headers dictionary would contain no trace context. `propagate.extract()` would return an empty context, `context.attach()` would attach that empty context, and the worker would generate a new Trace ID as usual. The result is the same: two separate traces.
+
+Both injection AND extraction must be present for propagation to work.
+
+</details>
+
+**Step 5:** Restore the two commented lines in `worker.py` and restart the worker to return to working propagation.
+
 ---
 
 ## Chapter 9: Searching and Monitoring Traces
 
 As the system processes thousands of requests, finding specific traces requires filtering and search capabilities. Grafana Tempo supports TraceQL, a query language for searching traces by attributes.
 
-### 9.1 Searching by Service Name
+### 9.1 Think First: Queryable Attributes
+
+TraceQL queries filter traces using attributes attached to spans. Throughout this lab, you have attached both resource-level attributes and span-level attributes.
+
+**Question:** What is the difference between a resource attribute (like `service.name`) and a span attribute (like `email.address`)? Which one stays the same across all spans from a service, and which one varies per span?
+
+<details>
+<summary>Click to review</summary>
+
+Resource attributes are set once on the `TracerProvider` and automatically attached to **every** span that provider creates. `service.name` is a resource attribute — every span from the Flask process carries `service.name="flask-api"` regardless of which endpoint or operation the span represents.
+
+Span attributes are set individually on specific spans using `span.set_attribute()`. `email.address` is a span attribute — it only exists on the `validate_email` span and only carries the email for that particular invocation. Different spans carry different span attributes depending on what the code sets.
+
+In TraceQL, resource attributes use the `resource.` prefix and span attributes use the `span.` prefix.
+
+</details>
+
+### 9.2 Searching by Service Name
 
 In Grafana Explore, switch to the **TraceQL** tab.
 
@@ -1475,7 +1746,7 @@ Find all traces from the Celery worker:
 
 ![alt text](./images/image-24.png)
 
-### 9.2 Searching by Span Attributes
+### 9.3 Searching by Span Attributes
 
 Custom attributes added in Chapter 6 enable targeted searches.
 
@@ -1499,7 +1770,7 @@ Find traces where SMTP connection exceeded 2 seconds:
 {resource.service.name="celery-worker" && name="smtp_connect"} | duration > 2s
 ```
 
-### 9.3 Searching by HTTP Status Code
+### 9.4 Searching by HTTP Status Code
 
 Find all failed API requests:
 
@@ -1513,7 +1784,7 @@ Find server errors specifically:
 {span.http.status_code>=500}
 ```
 
-### 9.4 Monitoring Error Traces
+### 9.5 Monitoring Error Traces
 
 Trigger the flaky task that fails randomly (70% failure rate):
 
@@ -1548,7 +1819,7 @@ Span attributes for errors include:
 
 This visibility eliminates the need to search through log files for error context. The trace shows the exact error, the full stack trace, and all contextual attributes (task arguments, timing, service name).
 
-### 9.5 Checkpoint
+### 9.6 Checkpoint
 
 Verify your understanding of trace search capabilities:
 
