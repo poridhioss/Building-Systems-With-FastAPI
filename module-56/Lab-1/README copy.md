@@ -116,7 +116,7 @@ These log entries are disconnected. To determine total request duration, you mus
 
 Distributed tracing solves this by producing a unified timeline:
 
-![alt text](./images/image-27.png)
+![alt text](image.png)
 
 ### 1.2 Core Terminology
 
@@ -174,24 +174,21 @@ Here is the complete lifecycle of a Trace ID for a single registration request:
 
 **Without propagation (broken):**
 
-![alt text](images/archi-diagrams/mod-56_without-propagation.drawio.svg)
+```
+Trace ID: abc-123 [flask-api only]
+└─ POST /register ────── 130ms
+
+Trace ID: xyz-789 [celery-worker only]  ← Different Trace ID!
+└─ send_welcome_email ────── 5000ms
+```
 
 **With propagation (working correctly):**
 
-![alt text](images/archi-diagrams/mod-56_with-propagation.drawio.svg)
-
-**Question:** In the "with propagation" diagram, Flask takes 130ms and Celery takes 5000ms. Shouldn't Flask's span be 130ms + 5000ms = 5130ms, since the Celery task is a child of the Flask span?
-
-<details>
-<summary>Reveal Answer</summary>
-
-No. Flask's span is only 130ms because `.delay()` is **asynchronous** — Flask pushes the task message to Redis and returns the HTTP response immediately without waiting for the Celery worker to finish. The parent-child relationship in a trace means "this span **initiated** the child," not "this span **waited for** the child to complete."
-
-If Flask were making a **synchronous** HTTP call to another service (e.g., calling a REST API with `requests.get()`), then yes — the parent span would encompass the child's duration because the caller blocks until the response arrives. But Celery's `.delay()` is fire-and-forget: Flask queues the message and moves on. The Celery worker picks up the task later in a completely separate process.
-
-This is exactly why distributed tracing is valuable here — it reveals that the user-facing response (130ms) is fast, while the background work (5000ms) happens independently. Without tracing, you might assume the entire flow takes 5130ms from the user's perspective, when in reality the user gets a response in 130ms.
-
-</details>
+```
+Trace ID: abc-123 [both services]
+├─ POST /register [flask-api] ────── 130ms
+└─ send_welcome_email [celery-worker] ────── 5000ms  (child of above)
+```
 
 This lab implements trace context propagation in Chapter 7 to ensure Flask and Celery spans are properly linked.
 
@@ -355,6 +352,8 @@ Verify all three containers are running:
 ```bash
 docker ps
 ```
+
+![alt text](./images/image-27.png)
 
 Expected output shows three containers: `flask-celery-redis`, `tempo`, and `grafana`.
 
